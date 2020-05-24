@@ -1,4 +1,4 @@
-module github.com/go-delve/delve
+module github.com/derekparker/delve
 
 go 1.11
 
