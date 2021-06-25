@@ -757,6 +757,10 @@ func isBreakpointExistsErr(err error) bool {
 	return r
 }
 
+func (d *Debugger) CreateTracepoint(fnName string) (*api.Breakpoint, error) {
+	return nil, nil
+}
+
 // AmendBreakpoint will update the breakpoint with the matching ID.
 // It also enables or disables the breakpoint.
 func (d *Debugger) AmendBreakpoint(amend *api.Breakpoint) error {

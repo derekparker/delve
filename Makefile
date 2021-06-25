@@ -1,10 +1,27 @@
 .DEFAULT_GOAL=test
 
+BPF_OBJ := pkg/proc/bpf/trace.o
+BPF_SRC := $(shell find . -type f -name '*.bpf.c')
+
 check-cert:
 	@go run _scripts/make.go check-cert
 
 build:
 	@go run _scripts/make.go build
+
+$(BPF_OBJ): $(BPF_SRC)
+	clang \
+		-I /usr/include \
+		-I /usr/src/kernels/5.12.11-300.fc34.x86_64/tools/lib \
+		-I /usr/src/kernels/5.12.11-300.fc34.x86_64/tools/bpf/resolve_btfids/libbpf \
+		-g -O2 \
+		-c \
+		-target bpf \
+		-o $(BPF_OBJ) \
+		pkg/proc/bpf/trace.bpf.c
+
+build-bpf: $(BPF_OBJ)
+	@env CGO_CFLAGS="-I /home/deparker/Code/libbpf/src" CGO_LDFLAGS="/usr/lib64/libbpf.so.0.4.0" go run _scripts/make.go build
 
 install:
 	@go run _scripts/make.go install

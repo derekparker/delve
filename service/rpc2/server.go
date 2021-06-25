@@ -251,6 +251,19 @@ func (s *RPCServer) CreateBreakpoint(arg CreateBreakpointIn, out *CreateBreakpoi
 	return nil
 }
 
+type CreateTracepointIn struct {
+	FunctionName string
+}
+
+type CreateTracepointOut struct {
+	Breakpoint api.Breakpoint
+}
+
+func (s *RPCServer) CreateTracepoint(arg CreateTracepointIn, out *CreateTracepointOut) error {
+	s.debugger.CreateTracepoint(arg.FunctionName)
+	return nil
+}
+
 type ClearBreakpointIn struct {
 	Id   int
 	Name string

@@ -1,6 +1,7 @@
 package cmds
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 
+	bpf "github.com/aquasecurity/libbpfgo"
+	"github.com/aquasecurity/libbpfgo/helpers"
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/pkg/gobuild"
 	"github.com/go-delve/delve/pkg/goversion"
@@ -512,13 +515,14 @@ func traceCmd(cmd *cobra.Command, args []string) {
 			dlvArgs = dlvArgs[:dlvArgsLen-1]
 		}
 
+		var debugname string
 		if traceAttachPid == 0 {
 			if dlvArgsLen >= 2 && traceExecFile != "" {
 				fmt.Fprintln(os.Stderr, "Cannot specify package when using exec.")
 				return 1
 			}
 
-			debugname := traceExecFile
+			debugname = traceExecFile
 			if traceExecFile == "" {
 				debugname, err = filepath.Abs(cmd.Flag("output").Value.String())
 				if err != nil {
@@ -572,36 +576,84 @@ func traceCmd(cmd *cobra.Command, args []string) {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+		// --- temp bpf code
+		bpfModule, err := bpf.NewModuleFromFile("/home/deparker/Code/delve/pkg/proc/bpf/trace.o")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(-1)
+		}
+		defer bpfModule.Close()
+
+		bpfModule.BPFLoadObject()
+		prog, err := bpfModule.GetProgram("uprobe__dlv_trace")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(-1)
+		}
+		eventsChannel := make(chan []byte)
+		rb, err := bpfModule.InitRingBuf("events", eventsChannel)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(-1)
+		}
+
+		rb.Start()
+
+		// --- temp bpf code
 		for i := range funcs {
-			_, err = client.CreateBreakpoint(&api.Breakpoint{
-				FunctionName: funcs[i],
-				Tracepoint:   true,
-				Line:         -1,
-				Stacktrace:   traceStackDepth,
-				LoadArgs:     &terminal.ShortLoadConfig,
-			})
-			if err != nil && !isBreakpointExistsErr(err) {
-				fmt.Fprintln(os.Stderr, err)
-				return 1
-			}
-			addrs, err := client.FunctionReturnLocations(funcs[i])
+			// --- temp bpf code
+			offset, err := helpers.SymbolToOffset(debugname, funcs[i])
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				return 1
+				os.Exit(-1)
 			}
-			for i := range addrs {
+			_, err = prog.AttachUprobe(client.ProcessPid(), debugname, offset)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(-1)
+			}
+
+			go func() {
+				for {
+					b, ok := <-eventsChannel
+					if ok {
+						fmt.Printf("Got an event!!! %#v\n", binary.LittleEndian.Uint32(b))
+					}
+				}
+			}()
+			// --- temp bpf code
+
+			/*
 				_, err = client.CreateBreakpoint(&api.Breakpoint{
-					Addr:        addrs[i],
-					TraceReturn: true,
-					Stacktrace:  traceStackDepth,
-					Line:        -1,
-					LoadArgs:    &terminal.ShortLoadConfig,
+					FunctionName: funcs[i],
+					Tracepoint:   true,
+					Line:         -1,
+					Stacktrace:   traceStackDepth,
+					LoadArgs:     &terminal.ShortLoadConfig,
 				})
 				if err != nil && !isBreakpointExistsErr(err) {
 					fmt.Fprintln(os.Stderr, err)
 					return 1
 				}
-			}
+				addrs, err := client.FunctionReturnLocations(funcs[i])
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return 1
+				}
+				for i := range addrs {
+					_, err = client.CreateBreakpoint(&api.Breakpoint{
+						Addr:        addrs[i],
+						TraceReturn: true,
+						Stacktrace:  traceStackDepth,
+						Line:        -1,
+						LoadArgs:    &terminal.ShortLoadConfig,
+					})
+					if err != nil && !isBreakpointExistsErr(err) {
+						fmt.Fprintln(os.Stderr, err)
+						return 1
+					}
+				}
+			*/
 		}
 		cmds := terminal.DebugCommands(client)
 		t := terminal.New(client, nil)
