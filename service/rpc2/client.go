@@ -236,9 +236,9 @@ func (c *RPCClient) CreateBreakpoint(breakPoint *api.Breakpoint) (*api.Breakpoin
 	return &out.Breakpoint, err
 }
 
-func (c *RPCClient) CreateTracepoint(FnName string) (*api.Breakpoint, error) {
+func (c *RPCClient) CreateTracepoint(fnName string) (*api.Breakpoint, error) {
 	var out CreateTracepointOut
-	err := c.call("CreateTracepoint", CreateTracepointIn{FunctionName: FnName}, &out)
+	err := c.call("CreateTracepoint", CreateTracepointIn{FunctionName: fnName}, &out)
 	return &out.Breakpoint, err
 }
 

@@ -1,8 +1,11 @@
 package native
 
+// #include "../bpf/function_vals.bpf.h"
+import "C"
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -22,6 +25,9 @@ import (
 	"github.com/go-delve/delve/pkg/proc/linutil"
 
 	isatty "github.com/mattn/go-isatty"
+
+	bpf "github.com/aquasecurity/libbpfgo"
+	"github.com/aquasecurity/libbpfgo/helpers"
 )
 
 // Process statuses
@@ -45,6 +51,11 @@ const (
 // process details.
 type osProcessDetails struct {
 	comm string
+
+	bpfProg    *bpf.BPFProg
+	bpfEvents  chan []byte
+	bpfRingBuf *bpf.RingBuffer
+	bpfArgMap  *bpf.BPFMap
 }
 
 // Launch creates and begins debugging a new process. First entry in
@@ -183,6 +194,37 @@ func initialize(dbp *nativeProcess) error {
 		comm = match[1]
 	}
 	dbp.os.comm = strings.ReplaceAll(string(comm), "%", "%%")
+
+	bpfModule, err := bpf.NewModuleFromFile("/home/deparker/Code/delve/pkg/proc/bpf/trace.o")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+	// TODO(derekparker): Close this when the program exits
+	//defer bpfModule.Close()
+
+	bpfModule.BPFLoadObject()
+	prog, err := bpfModule.GetProgram("uprobe__dlv_trace")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+	dbp.os.bpfProg = prog
+
+	dbp.os.bpfEvents = make(chan []byte)
+	dbp.os.bpfRingBuf, err = bpfModule.InitRingBuf("events", dbp.os.bpfEvents)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+	dbp.os.bpfRingBuf.Start()
+
+	dbp.os.bpfArgMap, err = bpfModule.GetMap("arg_map")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+
 	return nil
 }
 
@@ -213,7 +255,6 @@ func (dbp *nativeProcess) kill() error {
 			return err
 		}
 	}
-	return nil
 }
 
 func (dbp *nativeProcess) requestManualStop() (err error) {
@@ -687,6 +728,55 @@ func (dbp *nativeProcess) EntryPoint() (uint64, error) {
 	}
 
 	return linutil.EntryPointFromAuxv(auxvbuf, dbp.bi.Arch.PtrSize()), nil
+}
+
+func (dbp *nativeProcess) SupportsBPF() bool {
+	return true
+}
+
+func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
+	fmt.Println("setting uprobe")
+	debugname := dbp.bi.Images[0].Path
+	offset, err := helpers.SymbolToOffset(debugname, fnName)
+	if err != nil {
+		fmt.Println("sym to offset")
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+	_, err = dbp.os.bpfProg.AttachUprobe(dbp.Pid(), debugname, offset)
+	if err != nil {
+		fmt.Println("attach uprobe")
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+	fn, ok := dbp.bi.LookupFunc[fnName]
+	if !ok {
+		fmt.Println("panic")
+		panic("could not find function")
+	}
+
+	fmt.Println("about to update map")
+	var arg C.function_values_t
+	arg.size = C.uint(args[0].Size)
+	arg.offset = C.uint(args[0].Offset)
+	if err := dbp.os.bpfArgMap.Update(fn.Entry, uint64(6)); err != nil {
+		fmt.Println("EXITING")
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+	fmt.Println("about to start goroutine")
+
+	// TODO(derekparker) Maybe use a context or something to cancel this goroutine if the tracepoint
+	// is removed.
+	go func() {
+		for {
+			fmt.Println("waiting for an event")
+			b, ok := <-dbp.os.bpfEvents
+			if ok {
+				fmt.Printf("Got an event!!! %#v\n", binary.LittleEndian.Uint32(b))
+			}
+		}
+	}()
 }
 
 func killProcess(pid int) error {

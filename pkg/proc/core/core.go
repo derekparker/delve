@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/go-delve/delve/pkg/elfwriter"
 	"github.com/go-delve/delve/pkg/dwarf/op"
+	"github.com/go-delve/delve/pkg/elfwriter"
 	"github.com/go-delve/delve/pkg/proc"
 )
 
@@ -268,6 +268,13 @@ func (p *process) Checkpoints() ([]proc.Checkpoint, error) { return nil, nil }
 
 // ClearCheckpoint clears a checkpoint, but will only return an error for core files.
 func (p *process) ClearCheckpoint(int) error { return errors.New("checkpoint not found") }
+
+func (p *process) SupportsBPF() bool {
+	return false
+}
+
+func (dbp *process) SetUProbe(fnName string, args []proc.UProbeArgMap) {
+}
 
 // ReadMemory will return memory from the core file at the specified location and put the
 // read memory into `data`, returning the length read, and returning an error if

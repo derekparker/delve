@@ -485,6 +485,13 @@ func (dbp *nativeProcess) EntryPoint() (uint64, error) {
 	return dbp.os.entryPoint, nil
 }
 
+func (dbp *nativeProcess) SupportsBPF() bool {
+	return true
+}
+
+func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
+}
+
 func killProcess(pid int) error {
 	p, err := os.FindProcess(pid)
 	if err != nil {

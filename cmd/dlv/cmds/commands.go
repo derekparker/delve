@@ -1,7 +1,6 @@
 package cmds
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +14,6 @@ import (
 	"strings"
 	"syscall"
 
-	bpf "github.com/aquasecurity/libbpfgo"
-	"github.com/aquasecurity/libbpfgo/helpers"
 	"github.com/go-delve/delve/pkg/config"
 	"github.com/go-delve/delve/pkg/gobuild"
 	"github.com/go-delve/delve/pkg/goversion"
@@ -576,52 +573,8 @@ func traceCmd(cmd *cobra.Command, args []string) {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		// --- temp bpf code
-		bpfModule, err := bpf.NewModuleFromFile("/home/deparker/Code/delve/pkg/proc/bpf/trace.o")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(-1)
-		}
-		defer bpfModule.Close()
-
-		bpfModule.BPFLoadObject()
-		prog, err := bpfModule.GetProgram("uprobe__dlv_trace")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(-1)
-		}
-		eventsChannel := make(chan []byte)
-		rb, err := bpfModule.InitRingBuf("events", eventsChannel)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(-1)
-		}
-
-		rb.Start()
-
-		// --- temp bpf code
 		for i := range funcs {
-			// --- temp bpf code
-			offset, err := helpers.SymbolToOffset(debugname, funcs[i])
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(-1)
-			}
-			_, err = prog.AttachUprobe(client.ProcessPid(), debugname, offset)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(-1)
-			}
-
-			go func() {
-				for {
-					b, ok := <-eventsChannel
-					if ok {
-						fmt.Printf("Got an event!!! %#v\n", binary.LittleEndian.Uint32(b))
-					}
-				}
-			}()
-			// --- temp bpf code
+			client.CreateTracepoint(funcs[i])
 
 			/*
 				_, err = client.CreateBreakpoint(&api.Breakpoint{

@@ -758,7 +758,15 @@ func isBreakpointExistsErr(err error) bool {
 }
 
 func (d *Debugger) CreateTracepoint(fnName string) (*api.Breakpoint, error) {
-	return nil, nil
+	d.targetMutex.Lock()
+	defer d.targetMutex.Unlock()
+
+	bp, err := d.target.SetTracepoint(fnName)
+	if err != nil {
+		fmt.Println("ERR", err)
+		return nil, err
+	}
+	return api.ConvertBreakpoint(bp), nil
 }
 
 // AmendBreakpoint will update the breakpoint with the matching ID.
@@ -1314,7 +1322,7 @@ func (d *Debugger) collectBreakpointInformation(state *api.DebuggerState) error 
 			}
 		}
 		if bp.LoadArgs != nil {
-			if vars, err := s.FunctionArguments(*api.LoadConfigToProc(bp.LoadArgs)); err == nil {
+			if vars, err := s.FunctionArguments(api.LoadConfigToProc(bp.LoadArgs)); err == nil {
 				bpi.Arguments = api.ConvertVars(vars)
 			}
 		}
@@ -1473,7 +1481,7 @@ func (d *Debugger) FunctionArguments(goid, frame, deferredCall int, cfg proc.Loa
 	if err != nil {
 		return nil, err
 	}
-	return s.FunctionArguments(cfg)
+	return s.FunctionArguments(&cfg)
 }
 
 // Function returns the current function.
@@ -1626,7 +1634,7 @@ func (d *Debugger) convertStacktrace(rawlocs []proc.Stackframe, cfg *proc.LoadCo
 			if err != nil {
 				return nil, err
 			}
-			arguments, err := scope.FunctionArguments(*cfg)
+			arguments, err := scope.FunctionArguments(cfg)
 			if err != nil {
 				return nil, err
 			}

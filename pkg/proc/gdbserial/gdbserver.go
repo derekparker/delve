@@ -360,6 +360,13 @@ func (p *gdbProcess) Connect(conn net.Conn, path string, pid int, debugInfoDirs 
 	return tgt, nil
 }
 
+func (p *gdbProcess) SupportsBPF() bool {
+	return false
+}
+
+func (dbp *gdbProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
+}
+
 // unusedPort returns an unused tcp port
 // This is a hack and subject to a race condition with other running
 // programs, but most (all?) OS will cycle through all ephemeral ports

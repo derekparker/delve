@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"debug/dwarf"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -8,6 +9,9 @@ import (
 	"go/parser"
 	"go/token"
 	"reflect"
+
+	"github.com/go-delve/delve/pkg/dwarf/reader"
+	"github.com/go-delve/delve/pkg/goversion"
 )
 
 const (
@@ -322,6 +326,60 @@ func NewBreakpointMap() BreakpointMap {
 // break point table.
 func (t *Target) SetBreakpoint(addr uint64, kind BreakpointKind, cond ast.Expr) (*Breakpoint, error) {
 	return t.setBreakpointInternal(addr, kind, 0, cond)
+}
+
+type UProbeArgMap struct {
+	Offset int64
+	Size   int64
+}
+
+func (t *Target) SetTracepoint(fnName string) (*Breakpoint, error) {
+	if t.proc.SupportsBPF() {
+		var args []UProbeArgMap
+		// Need to get DWARF information here from BinaryInfo and then somehow
+		// pass that through to the BPF program. Most likely the way to do this will be
+		// to create a map in the BPF program and populate it from the Go side.
+		fn, ok := t.BinInfo().LookupFunc[fnName]
+		if !ok {
+			return nil, fmt.Errorf("could not find function %s", fnName)
+		}
+		dwarfTree, err := fn.cu.image.getDwarfTree(fn.offset)
+		if err != nil {
+			return nil, err
+		}
+		variablesFlags := reader.VariablesOnlyVisible
+		if t.BinInfo().Producer() != "" && goversion.ProducerAfterOrEqual(t.BinInfo().Producer(), 1, 15) {
+			variablesFlags |= reader.VariablesTrustDeclLine
+		}
+		_, l, _ := t.BinInfo().PCToLine(fn.Entry)
+
+		regs, err := t.CurrentThread().Registers()
+		if err != nil {
+			return nil, err
+		}
+		dregs := t.BinInfo().Arch.RegistersToDwarfRegisters(fn.cu.image.StaticBase, regs)
+		pcreg := dregs.Reg(t.BinInfo().Arch.PCRegNum)
+		pcreg.Uint64Val = fn.Entry
+		//dregs.CFA = 1
+
+		varEntries := reader.Variables(dwarfTree, fn.Entry, l, variablesFlags)
+		for _, entry := range varEntries {
+			n, dt, err := readVarEntry(entry.Tree, fn.cu.image)
+			if err != nil {
+				return nil, err
+			}
+			addr, pieces, descr, err := t.BinInfo().Location(entry, dwarf.AttrLocation, fn.Entry, *dregs)
+			if err != nil {
+				return nil, err
+			}
+			//addr -= 1 // cleanup from setting CFA to 1 earlier
+			fmt.Println(n, dt.Size(), addr, pieces, descr)
+			args = append(args, UProbeArgMap{Offset: addr, Size: dt.Size()})
+		}
+		t.proc.SetUProbe(fnName, args)
+		return nil, nil
+	}
+	return nil, nil
 }
 
 // SetWatchpoint sets a data breakpoint at addr and stores it in the

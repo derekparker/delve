@@ -144,9 +144,9 @@ func PrettyPrint(out io.Writer, instructions []byte) {
 }
 
 func callframecfa(opcode Opcode, ctxt *context) error {
-	if ctxt.CFA == 0 {
-		return fmt.Errorf("Could not retrieve CFA for current PC")
-	}
+	//if ctxt.CFA == 0 {
+	//return fmt.Errorf("Could not retrieve CFA for current PC")
+	//}
 	ctxt.stack = append(ctxt.stack, int64(ctxt.CFA))
 	return nil
 }

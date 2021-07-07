@@ -1,7 +1,7 @@
 .DEFAULT_GOAL=test
 
 BPF_OBJ := pkg/proc/bpf/trace.o
-BPF_SRC := $(shell find . -type f -name '*.bpf.c')
+BPF_SRC := $(shell find . -type f -name '*.bpf.*')
 
 check-cert:
 	@go run _scripts/make.go check-cert
@@ -12,8 +12,8 @@ build:
 $(BPF_OBJ): $(BPF_SRC)
 	clang \
 		-I /usr/include \
-		-I /usr/src/kernels/5.12.11-300.fc34.x86_64/tools/lib \
-		-I /usr/src/kernels/5.12.11-300.fc34.x86_64/tools/bpf/resolve_btfids/libbpf \
+		-I /usr/src/kernels/$(uname -r)/tools/lib \
+		-I /usr/src/kernels/$(uname -r)/tools/bpf/resolve_btfids/libbpf \
 		-g -O2 \
 		-c \
 		-target bpf \

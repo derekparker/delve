@@ -374,6 +374,13 @@ func (dbp *nativeProcess) EntryPoint() (uint64, error) {
 	return uint64(ep), err
 }
 
+func (dbp *nativeProcess) SupportsBPF() bool {
+	return false
+}
+
+func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
+}
+
 // Usedy by Detach
 func killProcess(pid int) error {
 	return sys.Kill(pid, sys.SIGINT)

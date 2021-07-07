@@ -462,4 +462,11 @@ func (dbp *nativeProcess) EntryPoint() (uint64, error) {
 	return 0, nil
 }
 
+func (dbp *nativeProcess) SupportsBPF() bool {
+	return false
+}
+
+func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
+}
+
 func initialize(dbp *nativeProcess) error { return nil }
