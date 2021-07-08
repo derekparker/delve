@@ -1,4 +1,4 @@
-# github.com/aquasecurity/libbpfgo v0.1.1
+# github.com/aquasecurity/libbpfgo v0.1.2-0.20210708203834-4928d36fafac
 github.com/aquasecurity/libbpfgo
 github.com/aquasecurity/libbpfgo/helpers
 # github.com/cosiner/argv v0.1.0

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	sys "golang.org/x/sys/unix"
 
@@ -198,6 +199,7 @@ func initialize(dbp *nativeProcess) error {
 	bpfModule, err := bpf.NewModuleFromFile("/home/deparker/Code/delve/pkg/proc/bpf/trace.o")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		dbp.detach(true)
 		os.Exit(-1)
 	}
 	// TODO(derekparker): Close this when the program exits
@@ -207,6 +209,7 @@ func initialize(dbp *nativeProcess) error {
 	prog, err := bpfModule.GetProgram("uprobe__dlv_trace")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		dbp.detach(true)
 		os.Exit(-1)
 	}
 	dbp.os.bpfProg = prog
@@ -215,6 +218,7 @@ func initialize(dbp *nativeProcess) error {
 	dbp.os.bpfRingBuf, err = bpfModule.InitRingBuf("events", dbp.os.bpfEvents)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		dbp.detach(true)
 		os.Exit(-1)
 	}
 	dbp.os.bpfRingBuf.Start()
@@ -222,6 +226,7 @@ func initialize(dbp *nativeProcess) error {
 	dbp.os.bpfArgMap, err = bpfModule.GetMap("arg_map")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		dbp.detach(true)
 		os.Exit(-1)
 	}
 
@@ -759,7 +764,8 @@ func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
 	var arg C.function_values_t
 	arg.size = C.uint(args[0].Size)
 	arg.offset = C.uint(args[0].Offset)
-	if err := dbp.os.bpfArgMap.Update(fn.Entry, uint64(6)); err != nil {
+	key := fn.Entry
+	if err := dbp.os.bpfArgMap.Update(unsafe.Pointer(&key), unsafe.Pointer(&arg)); err != nil {
 		fmt.Println("EXITING")
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(-1)
@@ -773,7 +779,7 @@ func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
 			fmt.Println("waiting for an event")
 			b, ok := <-dbp.os.bpfEvents
 			if ok {
-				fmt.Printf("Got an event!!! %#v\n", binary.LittleEndian.Uint32(b))
+				fmt.Printf("Got an event!!! %d\n", binary.LittleEndian.Uint64(b))
 			}
 		}
 	}()

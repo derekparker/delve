@@ -21,7 +21,7 @@ $(BPF_OBJ): $(BPF_SRC)
 		pkg/proc/bpf/trace.bpf.c
 
 build-bpf: $(BPF_OBJ)
-	@env CGO_CFLAGS="-I /home/deparker/Code/libbpf/src" CGO_LDFLAGS="/usr/lib64/libbpf.so.0.4.0" go run _scripts/make.go build
+	@env CGO_CFLAGS="-I /home/deparker/Code/libbpf/src" CGO_LDFLAGS="/usr/lib64/libbpf.a" go run _scripts/make.go build
 
 install:
 	@go run _scripts/make.go install

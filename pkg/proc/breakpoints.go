@@ -360,7 +360,7 @@ func (t *Target) SetTracepoint(fnName string) (*Breakpoint, error) {
 		dregs := t.BinInfo().Arch.RegistersToDwarfRegisters(fn.cu.image.StaticBase, regs)
 		pcreg := dregs.Reg(t.BinInfo().Arch.PCRegNum)
 		pcreg.Uint64Val = fn.Entry
-		//dregs.CFA = 1
+		dregs.CFA = int64(t.BinInfo().Arch.PtrSize())
 
 		varEntries := reader.Variables(dwarfTree, fn.Entry, l, variablesFlags)
 		for _, entry := range varEntries {
@@ -368,13 +368,13 @@ func (t *Target) SetTracepoint(fnName string) (*Breakpoint, error) {
 			if err != nil {
 				return nil, err
 			}
-			addr, pieces, descr, err := t.BinInfo().Location(entry, dwarf.AttrLocation, fn.Entry, *dregs)
+			offset, pieces, descr, err := t.BinInfo().Location(entry, dwarf.AttrLocation, fn.Entry, *dregs)
 			if err != nil {
 				return nil, err
 			}
 			//addr -= 1 // cleanup from setting CFA to 1 earlier
-			fmt.Println(n, dt.Size(), addr, pieces, descr)
-			args = append(args, UProbeArgMap{Offset: addr, Size: dt.Size()})
+			fmt.Println(n, dt.Size(), offset, pieces, descr)
+			args = append(args, UProbeArgMap{Offset: offset, Size: dt.Size()})
 		}
 		t.proc.SetUProbe(fnName, args)
 		return nil, nil

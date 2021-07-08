@@ -39,7 +39,7 @@ func NewMakeCommands() *cobra.Command {
 		Short: "Build delve",
 		Run: func(cmd *cobra.Command, args []string) {
 			tagFlag := prepareMacnative()
-			execute("go", "build", "-mod", "vendor", tagFlag, buildFlags(), DelveMainPackagePath)
+			execute("go", "build", "-ldflags", "-extldflags -static", tagFlag, buildFlags(), DelveMainPackagePath)
 			if runtime.GOOS == "darwin" && os.Getenv("CERT") != "" && canMacnative() {
 				codesign("./dlv")
 			}

@@ -1,5 +1,7 @@
 github.com/aquasecurity/libbpfgo v0.1.1 h1:j/ipxI/l20lu5Tosn0o9JYj7bD3Cwzi18jIEEu3rMvQ=
 github.com/aquasecurity/libbpfgo v0.1.1/go.mod h1:/+clceXE103FaXvVTIY2HAkQjxNtkra4DRWvZYr2SKw=
+github.com/aquasecurity/libbpfgo v0.1.2-0.20210708203834-4928d36fafac h1:oehMMAySC3p8eSwcwQ8lTXxeCkkPll+AwNesUNowbJ8=
+github.com/aquasecurity/libbpfgo v0.1.2-0.20210708203834-4928d36fafac/go.mod h1:/+clceXE103FaXvVTIY2HAkQjxNtkra4DRWvZYr2SKw=
 github.com/chzyer/logex v1.1.10/go.mod h1:+Ywpsq7O8HXn0nuIou7OrIPyXbp3wmkHB+jjWRnGsAI=
 github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e h1:fY5BOSpyZCqRo5OhCuC+XN+r/bBCmeuuJtjz+bCNIf8=
 github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e/go.mod h1:nSuG5e5PlCu98SY8svDHJxuZscDgtXS6KTTbou5AhLI=

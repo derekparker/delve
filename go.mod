@@ -3,7 +3,7 @@ module github.com/go-delve/delve
 go 1.11
 
 require (
-	github.com/aquasecurity/libbpfgo v0.1.1
+	github.com/aquasecurity/libbpfgo v0.1.2-0.20210708203834-4928d36fafac
 	github.com/cosiner/argv v0.1.0
 	github.com/cpuguy83/go-md2man v1.0.10 // indirect
 	github.com/creack/pty v1.1.9
