@@ -365,20 +365,25 @@ func (t *Target) SetTracepoint(fnName string) (*Breakpoint, error) {
 		// true value of the CFA for any stack variable being passed into the function we are tracing.
 		// Initialize the CFA to the value of a pointer so that we skip the return address of the function
 		// stored on the stack.
-		dregs.CFA = int64(t.BinInfo().Arch.PtrSize())
+		// dregs.CFA = int64(t.BinInfo().Arch.PtrSize())
 
 		varEntries := reader.Variables(dwarfTree, fn.Entry, l, variablesFlags)
 		for _, entry := range varEntries {
+			isret, _ := entry.Val(dwarf.AttrVarParam).(bool)
+			if isret {
+				continue
+			}
 			n, dt, err := readVarEntry(entry.Tree, fn.cu.image)
 			if err != nil {
 				return nil, err
 			}
-			offset, pieces, descr, err := t.BinInfo().Location(entry, dwarf.AttrLocation, fn.Entry, *dregs)
+			offset, _, _, err := t.BinInfo().Location(entry, dwarf.AttrLocation, fn.Entry, *dregs)
 			if err != nil {
 				return nil, err
 			}
 			//addr -= 1 // cleanup from setting CFA to 1 earlier
-			fmt.Println(n, dt.Size(), offset, pieces, descr)
+			offset += int64(t.BinInfo().Arch.PtrSize())
+			fmt.Printf("Name: %s Size: %d Offset: %d\n", n, dt.Size(), offset)
 			args = append(args, UProbeArgMap{Offset: offset, Size: dt.Size()})
 		}
 		t.proc.SetUProbe(fnName, args)

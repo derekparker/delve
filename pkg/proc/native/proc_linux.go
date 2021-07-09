@@ -740,50 +740,67 @@ func (dbp *nativeProcess) SupportsBPF() bool {
 }
 
 func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
-	fmt.Println("setting uprobe")
+	// We only allow up to 8 args for a BPF probe.
+	// Return early if we have more.
+	if len(args) > 8 {
+		return
+	}
+
 	debugname := dbp.bi.Images[0].Path
 	offset, err := helpers.SymbolToOffset(debugname, fnName)
 	if err != nil {
-		fmt.Println("sym to offset")
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(-1)
 	}
 	_, err = dbp.os.bpfProg.AttachUprobe(dbp.Pid(), debugname, offset)
 	if err != nil {
-		fmt.Println("attach uprobe")
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(-1)
 	}
 	fn, ok := dbp.bi.LookupFunc[fnName]
 	if !ok {
-		fmt.Println("panic")
 		panic("could not find function")
 	}
 
-	fmt.Println("about to update map")
 	var params C.function_parameter_list_t
-	var arg1 C.function_parameter_t
-	arg1.size = C.uint(args[0].Size)
-	arg1.offset = C.uint(args[0].Offset)
-
 	params.n_parameters = C.uint(len(args))
-	params.params[0] = arg1
+	for i, arg := range args {
+		var param C.function_parameter_t
+		param.size = C.uint(arg.Size)
+		param.offset = C.uint(arg.Offset)
+		params.params[i] = param
+	}
+
+	/*
+		var arg1 C.function_parameter_t
+		arg1.size = C.uint(args[0].Size)
+		arg1.offset = C.uint(args[0].Offset)
+
+		//params.n_parameters = C.uint(len(args))
+		params.params[0] = arg1
+
+		var arg2 C.function_parameter_t
+		arg2.size = C.uint(args[1].Size)
+		arg2.offset = C.uint(args[1].Offset)
+		params.params[1] = arg2
+	*/
+
+	fmt.Println(len(args))
+
 	key := fn.Entry
 	if err := dbp.os.bpfArgMap.Update(unsafe.Pointer(&key), unsafe.Pointer(&params)); err != nil {
-		fmt.Println("EXITING")
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(-1)
 	}
-	fmt.Println("about to start goroutine")
 
 	// TODO(derekparker) Maybe use a context or something to cancel this goroutine if the tracepoint
 	// is removed.
 	go func() {
+		fmt.Println("waiting for an event")
 		for {
-			fmt.Println("waiting for an event")
 			b, ok := <-dbp.os.bpfEvents
 			if ok {
-				fmt.Printf("Got an event!!! %d\n", binary.LittleEndian.Uint64(b))
+				fmt.Printf("Got an event: %#v\n", binary.LittleEndian.Uint64(b[:8]))
 			}
 		}
 	}()
