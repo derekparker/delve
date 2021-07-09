@@ -15,5 +15,5 @@ struct {
     __uint(max_entries, 42);
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, u64);
-    __type(value, u64);
+    __type(value, function_parameter_list_t);
 } arg_map SEC(".maps");

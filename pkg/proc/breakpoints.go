@@ -360,6 +360,11 @@ func (t *Target) SetTracepoint(fnName string) (*Breakpoint, error) {
 		dregs := t.BinInfo().Arch.RegistersToDwarfRegisters(fn.cu.image.StaticBase, regs)
 		pcreg := dregs.Reg(t.BinInfo().Arch.PCRegNum)
 		pcreg.Uint64Val = fn.Entry
+
+		// We don't really want the real CFA value here. Instead we want the offset from the
+		// true value of the CFA for any stack variable being passed into the function we are tracing.
+		// Initialize the CFA to the value of a pointer so that we skip the return address of the function
+		// stored on the stack.
 		dregs.CFA = int64(t.BinInfo().Arch.PtrSize())
 
 		varEntries := reader.Variables(dwarfTree, fn.Entry, l, variablesFlags)

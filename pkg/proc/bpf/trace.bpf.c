@@ -3,12 +3,13 @@
 SEC("uprobe/dlv_trace")
 
 int uprobe__dlv_trace(struct pt_regs *ctx) {
-    struct function_values *arg;
+    struct function_parameter_list *args;
+    function_parameter_t param;
     uint64_t key = ctx->ip;
     unsigned int *m;
 
-    arg = bpf_map_lookup_elem(&arg_map, &key);
-    if (!arg) {
+    args = bpf_map_lookup_elem(&arg_map, &key);
+    if (!args) {
         return 1;
     }
 
@@ -17,8 +18,9 @@ int uprobe__dlv_trace(struct pt_regs *ctx) {
         return 1;
     }
 
-    size_t addr = ctx->sp + arg->offset; // + arg->offset + 8;
-    long ret = bpf_probe_read_user(m, arg->size & (0x2f - 1), (void *)(addr));
+    param = args->params[0];
+    size_t addr = ctx->sp + param.offset; // + arg->offset + 8;
+    long ret = bpf_probe_read_user(m, param.size & (0x2f - 1), (void *)(addr));
     if (ret < 0) {
         bpf_ringbuf_discard(m, 0);
         return 1;

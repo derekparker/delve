@@ -761,11 +761,15 @@ func (dbp *nativeProcess) SetUProbe(fnName string, args []proc.UProbeArgMap) {
 	}
 
 	fmt.Println("about to update map")
-	var arg C.function_values_t
-	arg.size = C.uint(args[0].Size)
-	arg.offset = C.uint(args[0].Offset)
+	var params C.function_parameter_list_t
+	var arg1 C.function_parameter_t
+	arg1.size = C.uint(args[0].Size)
+	arg1.offset = C.uint(args[0].Offset)
+
+	params.n_parameters = C.uint(len(args))
+	params.params[0] = arg1
 	key := fn.Entry
-	if err := dbp.os.bpfArgMap.Update(unsafe.Pointer(&key), unsafe.Pointer(&arg)); err != nil {
+	if err := dbp.os.bpfArgMap.Update(unsafe.Pointer(&key), unsafe.Pointer(&params)); err != nil {
 		fmt.Println("EXITING")
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(-1)
