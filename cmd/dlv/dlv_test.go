@@ -1203,6 +1203,54 @@ func TestTraceEBPF4(t *testing.T) {
 	}
 }
 
+func TestTraceEBPFSlices(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("CI") == "true" {
+		t.Skip("cannot run test in CI, requires kernel compiled with btf support")
+	}
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("not implemented on non linux/amd64 systems")
+	}
+	if !goversion.VersionAfterOrEqual(runtime.Version(), 1, 16) {
+		t.Skip("requires at least Go 1.16 to run test")
+	}
+	usr, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usr.Uid != "0" {
+		t.Skip("test must be run as root")
+	}
+
+	dlvbin := protest.GetDlvBinaryEBPF(t)
+
+	fixtures := protest.FindFixturesDir()
+	cmd := exec.Command(dlvbin, "trace", "--ebpf", "--output", filepath.Join(t.TempDir(), "__debug"), filepath.Join(fixtures, "ebpf_trace_slices.go"), "main.processSlice")
+	rdr, err := cmd.StderrPipe()
+	assertNoError(err, t, "stderr pipe")
+	defer rdr.Close()
+
+	assertNoError(cmd.Start(), t, "running trace")
+
+	output, err := io.ReadAll(rdr)
+	assertNoError(err, t, "ReadAll")
+
+	cmd.Wait()
+
+	// Verify the trace output shows the function call with actual slice contents
+	// Now that slice data reading is implemented, we should see the slice values
+	expected := []byte(`> (1) main.processSlice([1 2 3 4 5])`)
+	if !bytes.Contains(output, expected) {
+		t.Fatalf("expected:\n%s\ngot:\n%s", string(expected), string(output))
+	}
+
+	// Verify we got the return value
+	expectedReturn := []byte(`=> "15"`)
+	if !bytes.Contains(output, expectedReturn) {
+		t.Fatalf("expected return value:\n%s\ngot:\n%s", string(expectedReturn), string(output))
+	}
+}
+
 func TestDlvTestChdir(t *testing.T) {
 	t.Parallel()
 	dlvbin := protest.GetDlvBinary(t)

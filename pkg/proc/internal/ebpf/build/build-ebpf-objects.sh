@@ -11,7 +11,7 @@ restore_vendor() {
 trap restore_vendor EXIT
 
 docker run \
-    -it \
+    -i \
     --rm \
     -v "$(pwd)":/delve-bpf \
     delve-ebpf-builder:v0.0.1

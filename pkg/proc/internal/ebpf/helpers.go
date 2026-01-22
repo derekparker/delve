@@ -1,4 +1,4 @@
-//go:build linux && amd64 && go1.16
+//go:build linux && amd64
 
 package ebpf
 
@@ -26,15 +26,16 @@ import (
 
 // function_parameter_t tracks function_parameter_t from function_vals.bpf.h
 type function_parameter_t struct {
-	kind      uint32
-	size      uint32
-	offset    int32
-	in_reg    bool
-	n_pieces  int32
-	reg_nums  [6]int32
-	daddr     uint64
-	val       [0x30]byte
-	deref_val [0x30]byte
+	kind         uint32
+	size         uint32
+	element_size uint32
+	offset       int32
+	in_reg       bool
+	n_pieces     int32
+	reg_nums     [6]int32
+	daddr        uint64
+	val          [0x30]byte
+	deref_val    [0x30]byte
 }
 
 // function_parameter_list_t tracks function_parameter_list_t from function_vals.bpf.h
@@ -52,7 +53,7 @@ type function_parameter_list_t struct {
 	ret_params       [6]function_parameter_t
 }
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -tags "go1.16" -target amd64 trace bpf/trace.bpf.c -- -I./bpf/include
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 trace bpf/trace.bpf.c -- -I./bpf/include
 
 const FakeAddressBase = 0xbeed000000000000
 
@@ -221,6 +222,47 @@ func parseFunctionParameterList(rawParamBytes []byte) RawUProbeParams {
 			strLen := binary.LittleEndian.Uint64(val[8:])
 			iparam.Base = FakeAddressBase + 0x30
 			iparam.Len = int64(strLen)
+		case reflect.Slice:
+			// Slice header layout: [ptr:8][len:8][cap:8] = 24 bytes
+			slicePtr := binary.LittleEndian.Uint64(val[0:8])
+			sliceLen := binary.LittleEndian.Uint64(val[8:16])
+			sliceCap := binary.LittleEndian.Uint64(val[16:24])
+
+			// Point to the copied slice data in our buffer (deref_val at offset 0x30)
+			// The eBPF program reads the actual slice contents into deref_val
+			iparam.Base = FakeAddressBase + 0x30
+			iparam.Len = int64(sliceLen)
+			iparam.Cap = int64(sliceCap)
+			iparam.Addr = slicePtr // Store original pointer for reference
+			iparam.ElementSize = int64(ret.element_size)
+
+			// Create a minimal SliceType so the variable can be loaded
+			// We use IntType as a generic element type based on element_size
+			var elemType godwarf.Type
+			if ret.element_size > 0 {
+				elemType = &godwarf.IntType{
+					BasicType: godwarf.BasicType{
+						CommonType: godwarf.CommonType{
+							ByteSize:    int64(ret.element_size),
+							ReflectKind: reflect.Int, // Generic placeholder
+						},
+					},
+				}
+			} else {
+				// Fallback for zero-size elements
+				elemType = &godwarf.VoidType{}
+			}
+
+			iparam.RealType = &godwarf.SliceType{
+				StructType: godwarf.StructType{
+					CommonType: godwarf.CommonType{
+						ByteSize:    24, // Slice header is always 24 bytes
+						ReflectKind: reflect.Slice,
+					},
+					Kind: "struct",
+				},
+				ElemType: elemType,
+			}
 		}
 		return iparam
 	}
@@ -247,6 +289,7 @@ func createFunctionParameterList(entry uint64, goidOffset int64, args []UProbeAr
 		param.size = uint32(arg.Size)
 		param.offset = int32(arg.Offset)
 		param.kind = uint32(arg.Kind)
+		param.element_size = uint32(arg.ElementSize)
 		if arg.InReg {
 			param.in_reg = true
 			param.n_pieces = int32(len(arg.Pieces))

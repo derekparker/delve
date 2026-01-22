@@ -4,6 +4,8 @@ typedef struct function_parameter {
     unsigned int kind;
     // Size of the variable in bytes.
     unsigned int size;
+    // For slices/arrays: size of each element in bytes. Zero for non-slice types.
+    unsigned int element_size;
 
     // Offset from stack pointer. This should only be set from the Go side.
     int offset;

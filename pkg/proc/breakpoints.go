@@ -628,13 +628,31 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 		}
 		isret, _ := entry.Val(dwarf.AttrVarParam).(bool)
 		offset += int64(t.BinInfo().Arch.PtrSize())
+
+		// For slices/arrays, extract the element size and ensure ReflectKind is set
+		var elementSize int64
+		kind := dt.Common().ReflectKind
+		if sliceType, ok := dt.(*godwarf.SliceType); ok {
+			elementSize = sliceType.ElemType.Size()
+			// DWARF-parsed SliceType may have invalid ReflectKind, fix it
+			if kind == reflect.Invalid {
+				kind = reflect.Slice
+			}
+		} else if arrayType, ok := dt.(*godwarf.ArrayType); ok {
+			elementSize = arrayType.Type.Size()
+			if kind == reflect.Invalid {
+				kind = reflect.Array
+			}
+		}
+
 		args = append(args, ebpf.UProbeArgMap{
-			Offset: offset,
-			Size:   dt.Size(),
-			Kind:   dt.Common().ReflectKind,
-			Pieces: paramPieces,
-			InReg:  len(pieces) > 0,
-			Ret:    isret,
+			Offset:      offset,
+			Size:        dt.Size(),
+			Kind:        kind,
+			ElementSize: elementSize,
+			Pieces:      paramPieces,
+			InReg:       len(pieces) > 0,
+			Ret:         isret,
 		})
 	}
 

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/goversion"
 	"github.com/go-delve/delve/pkg/logflags"
@@ -448,6 +449,13 @@ func (t *Target) GetBufferedTracepoints() []*UProbeTraceResult {
 		if v.RealType == nil {
 			v.Unreadable = errors.New("type not supported by ebpf")
 			return v
+		}
+
+		// For slices, set up fieldType and stride so loadArrayValues works
+		if sliceType, ok := v.RealType.(*godwarf.SliceType); ok {
+			v.fieldType = sliceType.ElemType
+			v.stride = ip.ElementSize
+			v.Cap = ip.Cap
 		}
 
 		cachedMem := CreateLoadedCachedMemory(ip.Data)

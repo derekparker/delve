@@ -862,6 +862,16 @@ func traceCmd(cmd *cobra.Command, args []string, conf *config.Config) int {
 								}
 								if p.Kind == reflect.String {
 									params.WriteString(fmt.Sprintf("%q", p.Value))
+								} else if p.Kind == reflect.Slice || p.Kind == reflect.Array {
+									// Format slice/array by showing elements
+									params.WriteString("[")
+									for i, child := range p.Children {
+										if i > 0 {
+											params.WriteString(" ")
+										}
+										params.WriteString(child.Value)
+									}
+									params.WriteString("]")
 								} else {
 									params.WriteString(p.Value)
 								}
