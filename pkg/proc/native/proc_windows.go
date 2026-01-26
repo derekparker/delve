@@ -170,9 +170,9 @@ func Attach(pid int, waitFor *proc.WaitFor, _ []string) (*proc.TargetGroup, erro
 	})
 	if err != nil {
 		if aperr != nil {
-			return nil, fmt.Errorf("%v also %v", err, aperr)
+			return nil, fmt.Errorf("could not attach to process %d: %w (note: failed to acquire debug privilege: %v)", pid, err, aperr)
 		}
-		return nil, err
+		return nil, fmt.Errorf("could not attach to process %d: %w", pid, err)
 	}
 	exepath, err := findExePath(pid)
 	if err != nil {
@@ -196,7 +196,7 @@ func acquireDebugPrivilege() error {
 	var token sys.Token
 	err := sys.OpenProcessToken(sys.CurrentProcess(), sys.TOKEN_QUERY|sys.TOKEN_ADJUST_PRIVILEGES, &token)
 	if err != nil {
-		return fmt.Errorf("could not acquire debug privilege (OpenCurrentProcessToken): %v", err)
+		return fmt.Errorf("could not acquire debug privilege (OpenProcessToken): %w", err)
 	}
 	defer token.Close()
 
@@ -204,7 +204,7 @@ func acquireDebugPrivilege() error {
 	var luid sys.LUID
 	err = sys.LookupPrivilegeValue(nil, &privName[0], &luid)
 	if err != nil {
-		return fmt.Errorf("could not acquire debug privilege  (LookupPrivilegeValue): %v", err)
+		return fmt.Errorf("could not acquire debug privilege (LookupPrivilegeValue): %w", err)
 	}
 
 	var tp sys.Tokenprivileges
@@ -214,7 +214,7 @@ func acquireDebugPrivilege() error {
 
 	err = sys.AdjustTokenPrivileges(token, false, &tp, 0, nil, nil)
 	if err != nil {
-		return fmt.Errorf("could not acquire debug privilege (AdjustTokenPrivileges): %v", err)
+		return fmt.Errorf("could not acquire debug privilege (AdjustTokenPrivileges): %w", err)
 	}
 
 	return nil
@@ -224,7 +224,7 @@ func waitForSearchProcess(pfx string, seen map[int]struct{}) (int, error) {
 	log := logflags.DebuggerLogger()
 	handle, err := sys.CreateToolhelp32Snapshot(sys.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return 0, fmt.Errorf("could not get process list: %v", err)
+		return 0, fmt.Errorf("could not create process snapshot: %w", err)
 	}
 	defer sys.CloseHandle(handle)
 
@@ -232,7 +232,7 @@ func waitForSearchProcess(pfx string, seen map[int]struct{}) (int, error) {
 	entry.Size = uint32(unsafe.Sizeof(entry))
 	err = sys.Process32First(handle, &entry)
 	if err != nil {
-		return 0, fmt.Errorf("could not get process list: %v", err)
+		return 0, fmt.Errorf("could not enumerate processes: %w", err)
 	}
 
 	for err = sys.Process32First(handle, &entry); err == nil; err = sys.Process32Next(handle, &entry) {

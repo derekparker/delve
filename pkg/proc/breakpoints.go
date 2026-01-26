@@ -495,20 +495,20 @@ func evalBreakpointCondition(tgt *Target, thread Thread, cond ast.Expr) (bool, e
 		if stack.disabledErrors {
 			return false, nil
 		}
-		return true, fmt.Errorf("error evaluating expression: %v", err)
+		return true, fmt.Errorf("error evaluating breakpoint condition: %w", err)
 	}
 	if v.Kind != reflect.Bool {
 		if stack.disabledErrors {
 			return false, nil
 		}
-		return true, errors.New("condition expression not boolean")
+		return true, fmt.Errorf("breakpoint condition must be boolean, got %s", v.Kind)
 	}
 	v.loadValue(loadFullValue)
 	if v.Unreadable != nil {
 		if stack.disabledErrors {
 			return false, nil
 		}
-		return true, fmt.Errorf("condition expression unreadable: %v", v.Unreadable)
+		return true, fmt.Errorf("breakpoint condition is unreadable: %w", v.Unreadable)
 	}
 	return constant.BoolVal(v.Value), nil
 }
@@ -663,7 +663,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, fmt.Errorf("can not watch %q", expr)
 	}
 	if xv.Unreadable != nil {
-		return nil, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
+		return nil, fmt.Errorf("expression %q is unreadable: %w", expr, xv.Unreadable)
 	}
 	if xv.Kind == reflect.UnsafePointer || xv.Kind == reflect.Invalid {
 		return nil, fmt.Errorf("can not watch variable of type %s", xv.Kind.String())
@@ -675,7 +675,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		// Read the interface to get the data pointer
 		_, data, _ := xv.readInterface()
 		if xv.Unreadable != nil {
-			return nil, fmt.Errorf("error reading interface %q: %v", expr, xv.Unreadable)
+			return nil, fmt.Errorf("could not read interface %q: %w", expr, xv.Unreadable)
 		}
 		if data == nil {
 			return nil, fmt.Errorf("invalid interface %q", expr)

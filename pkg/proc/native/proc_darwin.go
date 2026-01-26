@@ -85,7 +85,7 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, _ []string, _ strin
 		pid = int(ret)
 	})
 	if pid <= 0 {
-		return nil, fmt.Errorf("could not fork/exec")
+		return nil, fmt.Errorf("could not fork/exec %s", cmd[0])
 	}
 	dbp.pid = pid
 	dbp.childProcess = true
@@ -158,7 +158,7 @@ func Attach(pid int, waitFor *proc.WaitFor, _ []string) (*proc.TargetGroup, erro
 		&dbp.os.notificationPort)
 
 	if kret != C.KERN_SUCCESS {
-		return nil, fmt.Errorf("could not attach to %d", pid)
+		return nil, fmt.Errorf("could not attach to process %d: mach error %#x", pid, kret)
 	}
 
 	dbp.os.initialized = true
@@ -188,11 +188,11 @@ func (procgrp *processGroup) kill(dbp *nativeProcess) (err error) {
 	}
 	err = sys.Kill(-dbp.pid, sys.SIGKILL)
 	if err != nil {
-		return errors.New("could not deliver signal: " + err.Error())
+		return fmt.Errorf("could not send SIGKILL to process %d: %w", dbp.pid, err)
 	}
 	for port := range dbp.threads {
 		if C.thread_resume(C.thread_act_t(port)) != C.KERN_SUCCESS {
-			return errors.New("could not resume task")
+			return fmt.Errorf("could not resume thread %d", port)
 		}
 	}
 	for {
@@ -215,7 +215,7 @@ func (dbp *nativeProcess) requestManualStop() (err error) {
 	dbp.os.halt = true
 	kret := C.raise_exception(task, thread, exceptionPort, C.EXC_BREAKPOINT)
 	if kret != C.KERN_SUCCESS {
-		return fmt.Errorf("could not raise mach exception")
+		return fmt.Errorf("could not raise mach exception: mach error %#x", kret)
 	}
 	return nil
 }

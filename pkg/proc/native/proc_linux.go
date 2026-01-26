@@ -129,7 +129,7 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 	dbp.childProcess = true
 	_, _, err = dbp.wait(process.Process.Pid, 0)
 	if err != nil {
-		return nil, fmt.Errorf("waiting for target execve failed: %s", err)
+		return nil, fmt.Errorf("waiting for target execve failed: %w", err)
 	}
 	tgt, err := dbp.initialize(cmd[0], debugInfoDirs)
 	if err != nil {
@@ -234,12 +234,12 @@ func initialize(dbp *nativeProcess) (string, error) {
 	if len(comm) <= 0 {
 		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", dbp.pid))
 		if err != nil {
-			return "", fmt.Errorf("could not read proc stat: %v", err)
+			return "", fmt.Errorf("could not read /proc/%d/stat: %w", dbp.pid, err)
 		}
 		expr := fmt.Sprintf("%d\\s*\\((.*)\\)", dbp.pid)
 		rexp, err := regexp.Compile(expr)
 		if err != nil {
-			return "", fmt.Errorf("regexp compile error: %v", err)
+			return "", fmt.Errorf("failed to compile regexp %q: %w", expr, err)
 		}
 		match := rexp.FindSubmatch(stat)
 		if match == nil {
@@ -268,7 +268,7 @@ func (procgrp *processGroup) kill(dbp *nativeProcess) error {
 		return errors.New("process must be stopped in order to kill it")
 	}
 	if err := sys.Kill(-dbp.pid, sys.SIGKILL); err != nil {
-		return errors.New("could not deliver signal " + err.Error())
+		return fmt.Errorf("could not send SIGKILL to process %d: %w", dbp.pid, err)
 	}
 	// wait for other threads first or the thread group leader (dbp.pid) will never exit.
 	for threadID := range dbp.threads {
@@ -317,7 +317,7 @@ func (dbp *nativeProcess) addThread(tid int, attach bool) (*nativeThread, error)
 			// we may already be tracing this thread due to
 			// PTRACE_O_TRACECLONE. We will surely blow up later
 			// if we truly don't have permissions.
-			return nil, fmt.Errorf("could not attach to new thread %d %s", tid, err)
+			return nil, fmt.Errorf("could not attach to new thread %d: %w", tid, err)
 		}
 		pid, status, err := dbp.waitFast(tid)
 		if err != nil {
@@ -331,14 +331,14 @@ func (dbp *nativeProcess) addThread(tid int, attach bool) (*nativeThread, error)
 	dbp.execPtraceFunc(func() { err = syscall.PtraceSetOptions(tid, ptraceOptions) })
 	if err == syscall.ESRCH {
 		if _, _, err = dbp.waitFast(tid); err != nil {
-			return nil, fmt.Errorf("error while waiting after adding thread: %d %s", tid, err)
+			return nil, fmt.Errorf("error while waiting after adding thread %d: %w", tid, err)
 		}
 		dbp.execPtraceFunc(func() { err = syscall.PtraceSetOptions(tid, ptraceOptions) })
 		if err == syscall.ESRCH {
 			return nil, err
 		}
 		if err != nil {
-			return nil, fmt.Errorf("could not set options for new traced thread %d %s", tid, err)
+			return nil, fmt.Errorf("could not set ptrace options for thread %d: %w", tid, err)
 		}
 	}
 
@@ -411,7 +411,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		}
 		wpid, status, err := waitdbp.wait(pid, wopt)
 		if err != nil {
-			return nil, fmt.Errorf("wait err %s %d", err, pid)
+			return nil, fmt.Errorf("wait failed for process %d: %w", pid, err)
 		}
 		if wpid == 0 {
 			if options&trapWaitNohang != 0 {
@@ -473,7 +473,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 					// thread died while we were adding it
 					continue
 				}
-				return nil, fmt.Errorf("could not get event message: %s", err)
+				return nil, fmt.Errorf("could not get ptrace event message for thread %d: %w", wpid, err)
 			}
 			th, err = dbp.addThread(int(cloned), false)
 			if err != nil {
@@ -495,11 +495,11 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 					delete(dbp.threads, th.ID)
 					continue
 				}
-				return nil, fmt.Errorf("could not continue new thread %d %s", cloned, err)
+				return nil, fmt.Errorf("could not resume new thread %d: %w", cloned, err)
 			}
 			if err = dbp.threads[int(wpid)].resume(); err != nil {
 				if err != sys.ESRCH {
-					return nil, fmt.Errorf("could not continue existing thread %d %s", wpid, err)
+					return nil, fmt.Errorf("could not resume existing thread %d: %w", wpid, err)
 				}
 			}
 			continue
@@ -894,7 +894,7 @@ func (dbp *nativeProcess) detach(kill bool) error {
 func (dbp *nativeProcess) EntryPoint() (uint64, error) {
 	auxvbuf, err := os.ReadFile(fmt.Sprintf("/proc/%d/auxv", dbp.pid))
 	if err != nil {
-		return 0, fmt.Errorf("could not read auxiliary vector: %v", err)
+		return 0, fmt.Errorf("could not read /proc/%d/auxv: %w", dbp.pid, err)
 	}
 
 	return linutil.EntryPointFromAuxv(auxvbuf, dbp.bi.Arch.PtrSize()), nil
