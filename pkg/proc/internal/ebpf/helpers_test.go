@@ -12,6 +12,110 @@ import (
 	"github.com/go-delve/delve/pkg/proc/internal/ebpf/testhelper"
 )
 
+func TestBuildDerefPlanStruct(t *testing.T) {
+	// Test struct with a pointer field and a string field.
+	structType := &godwarf.StructType{
+		CommonType: godwarf.CommonType{
+			ByteSize:    32, // int(8) + *int(8) + string(16)
+			ReflectKind: reflect.Struct,
+		},
+		Kind:       "struct",
+		StructName: "TestStruct",
+		Field: []*godwarf.StructField{
+			{
+				Name:       "A",
+				ByteOffset: 0,
+				Type: &godwarf.IntType{
+					BasicType: godwarf.BasicType{
+						CommonType: godwarf.CommonType{ByteSize: 8},
+					},
+				},
+			},
+			{
+				Name:       "B",
+				ByteOffset: 8,
+				Type: &godwarf.PtrType{
+					CommonType: godwarf.CommonType{ByteSize: 8},
+					Type: &godwarf.IntType{
+						BasicType: godwarf.BasicType{
+							CommonType: godwarf.CommonType{ByteSize: 8},
+						},
+					},
+				},
+			},
+			{
+				Name:       "C",
+				ByteOffset: 16,
+				Type: &godwarf.StringType{
+					StructType: godwarf.StructType{
+						CommonType: godwarf.CommonType{ByteSize: 16, ReflectKind: reflect.String},
+						Kind:       "struct",
+					},
+				},
+			},
+		},
+	}
+
+	derefs, numDerefs := BuildDerefPlan(structType)
+	if numDerefs != 2 {
+		t.Fatalf("expected 2 derefs, got %d", numDerefs)
+	}
+	if derefs[0].Offset != 8 {
+		t.Errorf("deref[0] offset: expected 8, got %d", derefs[0].Offset)
+	}
+	if derefs[0].Size != 8 {
+		t.Errorf("deref[0] size: expected 8, got %d", derefs[0].Size)
+	}
+	if derefs[1].Offset != 16 {
+		t.Errorf("deref[1] offset: expected 16, got %d", derefs[1].Offset)
+	}
+	if derefs[1].Size == 0 {
+		t.Error("deref[1] size should be non-zero")
+	}
+}
+
+func TestBuildDerefPlanScalarArray(t *testing.T) {
+	arrayType := &godwarf.ArrayType{
+		CommonType: godwarf.CommonType{
+			ByteSize:    32,
+			ReflectKind: reflect.Array,
+		},
+		Type: &godwarf.IntType{
+			BasicType: godwarf.BasicType{
+				CommonType: godwarf.CommonType{ByteSize: 8},
+			},
+		},
+		Count: 4,
+	}
+
+	_, numDerefs := BuildDerefPlan(arrayType)
+	if numDerefs != 0 {
+		t.Errorf("expected 0 derefs for scalar array, got %d", numDerefs)
+	}
+}
+
+func TestBuildDerefPlanPointer(t *testing.T) {
+	ptrType := &godwarf.PtrType{
+		CommonType: godwarf.CommonType{ByteSize: 8},
+		Type: &godwarf.IntType{
+			BasicType: godwarf.BasicType{
+				CommonType: godwarf.CommonType{ByteSize: 8},
+			},
+		},
+	}
+
+	derefs, numDerefs := BuildDerefPlan(ptrType)
+	if numDerefs != 1 {
+		t.Fatalf("expected 1 deref, got %d", numDerefs)
+	}
+	if derefs[0].Offset != 0 {
+		t.Errorf("deref[0] offset: expected 0, got %d", derefs[0].Offset)
+	}
+	if derefs[0].Size != 8 {
+		t.Errorf("deref[0] size: expected 8, got %d", derefs[0].Size)
+	}
+}
+
 func compareStructTypes(t *testing.T, gostructVal, cstructVal any) {
 	t.Helper()
 	gostruct := reflect.ValueOf(gostructVal).Type()
@@ -57,15 +161,6 @@ func compareStructTypes(t *testing.T, gostructVal, cstructVal any) {
 	}
 }
 
-func TestStructConsistency(t *testing.T) {
-	t.Run("function_parameter_t", func(t *testing.T) {
-		compareStructTypes(t, function_parameter_t{}, testhelper.Function_parameter_t{})
-	})
-	t.Run("function_parameter_list_t", func(t *testing.T) {
-		compareStructTypes(t, function_parameter_list_t{}, testhelper.Function_parameter_list_t{})
-	})
-}
-
 func TestEventReassembly(t *testing.T) {
 	ctx := &EBPFContext{
 		pendingEvents: make(map[pendingKey]*pendingEvent),
@@ -79,12 +174,11 @@ func TestEventReassembly(t *testing.T) {
 	hdrBuf[17] = 0                                         // is_ret = false
 	binary.LittleEndian.PutUint32(hdrBuf[18:22], 1)        // n_params
 
-	// Build PARAM event bytes.
-	// Commit 1 wire format: 27-byte header + 0x30 val + 0x30 deref_val = 123 bytes.
+	// Build PARAM event bytes (63-byte header + 4 bytes val data).
 	valData := make([]byte, 4)
 	binary.LittleEndian.PutUint32(valData, 99)
 
-	paramBuf := make([]byte, paramEventDataWireSize)
+	paramBuf := make([]byte, paramEventWireSize+4)
 	paramBuf[0] = eventTypeParam
 	binary.LittleEndian.PutUint64(paramBuf[1:9], uint64(42))              // goroutine_id
 	binary.LittleEndian.PutUint64(paramBuf[9:17], 0x1000)                 // fn_addr
@@ -92,7 +186,8 @@ func TestEventReassembly(t *testing.T) {
 	paramBuf[18] = 0                                                      // is_ret = false
 	binary.LittleEndian.PutUint32(paramBuf[19:23], uint32(reflect.Int32)) // kind
 	binary.LittleEndian.PutUint32(paramBuf[23:27], 4)                     // val_size
-	// val region starts at paramEventWireSize (27)
+	binary.LittleEndian.PutUint32(paramBuf[27:31], 0)                     // n_derefs
+	// deref_sizes[0..7] are already zero from make()
 	copy(paramBuf[paramEventWireSize:], valData)
 
 	// Feed events into the context.
@@ -130,17 +225,17 @@ func TestEventReassembly(t *testing.T) {
 	if p.Addr != fakeAddressUnresolv {
 		t.Errorf("expected Addr fakeAddressUnresolv, got 0x%x", p.Addr)
 	}
-	if len(p.Pieces) != 2 {
-		t.Fatalf("expected 2 pieces, got %d", len(p.Pieces))
+	if len(p.Pieces) != 1 {
+		t.Fatalf("expected 1 piece, got %d", len(p.Pieces))
 	}
 	if p.Pieces[0].Size != 4 {
-		t.Errorf("expected piece[0] size 4, got %d", p.Pieces[0].Size)
+		t.Errorf("expected piece size 4, got %d", p.Pieces[0].Size)
 	}
 	if p.Pieces[0].Val != fakeAddressUnresolv {
-		t.Errorf("expected piece[0] Val fakeAddressUnresolv, got 0x%x", p.Pieces[0].Val)
+		t.Errorf("expected piece Val fakeAddressUnresolv, got 0x%x", p.Pieces[0].Val)
 	}
 	if p.Pieces[0].Kind != op.AddrPiece {
-		t.Errorf("expected piece[0] Kind AddrPiece, got %v", p.Pieces[0].Kind)
+		t.Errorf("expected piece Kind AddrPiece, got %v", p.Pieces[0].Kind)
 	}
 	if p.RealType == nil {
 		t.Fatal("expected non-nil RealType")
@@ -170,7 +265,7 @@ func TestEventReassemblyPartial(t *testing.T) {
 	ctx.storeEvent(hdrBuf)
 
 	// Only send param_idx=0, skip param_idx=1.
-	paramBuf := make([]byte, paramEventDataWireSize)
+	paramBuf := make([]byte, paramEventWireSize+4)
 	paramBuf[0] = eventTypeParam
 	binary.LittleEndian.PutUint64(paramBuf[1:9], uint64(1))
 	binary.LittleEndian.PutUint64(paramBuf[9:17], 0x2000)
@@ -178,7 +273,7 @@ func TestEventReassemblyPartial(t *testing.T) {
 	paramBuf[18] = 0
 	binary.LittleEndian.PutUint32(paramBuf[19:23], uint32(reflect.Int))
 	binary.LittleEndian.PutUint32(paramBuf[23:27], 4)
-	// val at paramEventWireSize
+	binary.LittleEndian.PutUint32(paramBuf[27:31], 0)
 	binary.LittleEndian.PutUint32(paramBuf[paramEventWireSize:], 42)
 
 	ctx.storeEvent(paramBuf)
@@ -238,6 +333,9 @@ func TestPackedWireSizes(t *testing.T) {
 		buf[18] = 1
 		binary.LittleEndian.PutUint32(buf[19:23], uint32(reflect.Int64))
 		binary.LittleEndian.PutUint32(buf[23:27], 8)
+		binary.LittleEndian.PutUint32(buf[27:31], 2)
+		binary.LittleEndian.PutUint32(buf[31:35], 100)
+		binary.LittleEndian.PutUint32(buf[35:39], 200)
 
 		p, ok := parseParamEvent(buf)
 		if !ok {
@@ -261,9 +359,172 @@ func TestPackedWireSizes(t *testing.T) {
 		if p.Val_size != 8 {
 			t.Errorf("Val_size: want 8, got %d", p.Val_size)
 		}
+		if p.N_derefs != 2 {
+			t.Errorf("N_derefs: want 2, got %d", p.N_derefs)
+		}
+		if p.Deref_sizes[0] != 100 || p.Deref_sizes[1] != 200 {
+			t.Errorf("Deref_sizes: want [100,200,...], got %v", p.Deref_sizes)
+		}
 
 		if _, ok := parseParamEvent(buf[:paramEventWireSize-1]); ok {
 			t.Error("parseParamEvent should reject short buffer")
 		}
+	})
+}
+
+func TestEventReassemblyNilPointerField(t *testing.T) {
+	// Verify that when a struct contains a pointer field whose value is 0 (nil),
+	// the Data field of the reassembled RawUProbeParam preserves the zero value.
+	// This is a precondition for the nil-pointer fix in rewritePointersToFakeAddresses
+	// (target.go), which skips rewriting nil pointers.
+
+	// Struct layout: { A int64 (8 bytes), B *int64 (8 bytes) } = 16 bytes total.
+	structType := &godwarf.StructType{
+		CommonType: godwarf.CommonType{
+			Name:        "main.MyStruct",
+			ByteSize:    16,
+			ReflectKind: reflect.Struct,
+		},
+		Kind:       "struct",
+		StructName: "MyStruct",
+		Field: []*godwarf.StructField{
+			{
+				Name:       "A",
+				ByteOffset: 0,
+				Type: &godwarf.IntType{
+					BasicType: godwarf.BasicType{
+						CommonType: godwarf.CommonType{ByteSize: 8},
+					},
+				},
+			},
+			{
+				Name:       "B",
+				ByteOffset: 8,
+				Type: &godwarf.PtrType{
+					CommonType: godwarf.CommonType{ByteSize: 8},
+					Type: &godwarf.IntType{
+						BasicType: godwarf.BasicType{
+							CommonType: godwarf.CommonType{ByteSize: 8},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := &EBPFContext{
+		pendingEvents: make(map[pendingKey]*pendingEvent),
+		paramInfo:     make(map[dwarfTypeKey]paramMeta),
+	}
+
+	// Register the struct type for fn_addr=0x3000, param_idx=0.
+	ctx.paramInfo[dwarfTypeKey{fnAddr: 0x3000, paramIdx: 0}] = paramMeta{dwarfType: structType}
+
+	// Build the deref plan to know how much deref data the BPF program would send.
+	derefs, numDerefs := BuildDerefPlan(structType)
+	if numDerefs != 1 {
+		t.Fatalf("expected 1 deref for struct with one pointer field, got %d", numDerefs)
+	}
+	if derefs[0].Offset != 8 {
+		t.Fatalf("expected deref offset 8, got %d", derefs[0].Offset)
+	}
+
+	derefEntrySize := int(derefs[0].Size)
+	if derefEntrySize > MaxDerefEntrySize {
+		derefEntrySize = MaxDerefEntrySize
+	}
+
+	// -- HEADER event --
+	hdrBuf := make([]byte, eventHeaderWireSize)
+	hdrBuf[0] = eventTypeHeader
+	binary.LittleEndian.PutUint64(hdrBuf[1:9], 100)     // goroutine_id
+	binary.LittleEndian.PutUint64(hdrBuf[9:17], 0x3000) // fn_addr
+	hdrBuf[17] = 0                                      // is_ret = false
+	binary.LittleEndian.PutUint32(hdrBuf[18:22], 1)     // n_params = 1
+
+	// -- PARAM event --
+	// The BPF program emits: paramEventWireSize header + maxValSize val region +
+	// numDerefs * MaxDerefEntrySize deref region.
+	totalEventSize := paramEventWireSize + maxValSize + int(numDerefs)*MaxDerefEntrySize
+	paramBuf := make([]byte, totalEventSize)
+	paramBuf[0] = eventTypeParam
+	binary.LittleEndian.PutUint64(paramBuf[1:9], 100)                      // goroutine_id
+	binary.LittleEndian.PutUint64(paramBuf[9:17], 0x3000)                  // fn_addr
+	paramBuf[17] = 0                                                       // param_idx = 0
+	paramBuf[18] = 0                                                       // is_ret = false
+	binary.LittleEndian.PutUint32(paramBuf[19:23], uint32(reflect.Struct)) // kind
+	binary.LittleEndian.PutUint32(paramBuf[23:27], 16)                     // val_size = 16 bytes
+	binary.LittleEndian.PutUint32(paramBuf[27:31], uint32(numDerefs))      // n_derefs
+	binary.LittleEndian.PutUint32(paramBuf[31:35], uint32(derefEntrySize)) // deref_sizes[0]
+
+	// Fill val region: A=42, B=0 (nil pointer).
+	valStart := paramEventWireSize
+	binary.LittleEndian.PutUint64(paramBuf[valStart:valStart+8], 42) // A = 42
+	// B at offset 8 is already 0 from make() — nil pointer.
+
+	// Deref region at maxValSize offset: all zeros (nil pointer dereference
+	// produces zero-filled slot from the BPF side).
+
+	// Feed events.
+	ctx.storeEvent(hdrBuf)
+	ctx.storeEvent(paramBuf)
+
+	// Verify.
+	ctx.m.Lock()
+	defer ctx.m.Unlock()
+
+	if len(ctx.parsedBpfEvents) != 1 {
+		t.Fatalf("expected 1 parsed event, got %d", len(ctx.parsedBpfEvents))
+	}
+
+	result := ctx.parsedBpfEvents[0]
+	if len(result.InputParams) != 1 {
+		t.Fatalf("expected 1 input param, got %d", len(result.InputParams))
+	}
+
+	p := result.InputParams[0]
+	if len(p.Data) < 16 {
+		t.Fatalf("expected Data len >= 16, got %d", len(p.Data))
+	}
+
+	// Verify field A has value 42.
+	fieldA := binary.LittleEndian.Uint64(p.Data[0:8])
+	if fieldA != 42 {
+		t.Errorf("field A: expected 42, got %d", fieldA)
+	}
+
+	// Verify the nil pointer field B is preserved as 0 in Data.
+	// This is the critical check: the pointer value must remain zero so that
+	// rewritePointersToFakeAddresses (with the nil-pointer fix) will skip it,
+	// and loadPtr will correctly recognize it as nil.
+	fieldB := binary.LittleEndian.Uint64(p.Data[8:16])
+	if fieldB != 0 {
+		t.Errorf("field B (nil pointer): expected 0, got %d (0x%x)", fieldB, fieldB)
+	}
+
+	// Verify that DerefData was captured (even though the pointer is nil,
+	// the BPF program still emits the deref slot — it's zero-filled).
+	if len(p.DerefData) != derefEntrySize {
+		t.Errorf("expected DerefData len %d, got %d", derefEntrySize, len(p.DerefData))
+	}
+
+	// Verify the DwarfType was properly associated.
+	if p.DwarfType == nil {
+		t.Fatal("expected non-nil DwarfType")
+	}
+	if _, ok := p.RealType.(*godwarf.StructType); !ok {
+		t.Fatalf("expected *godwarf.StructType, got %T", p.RealType)
+	}
+}
+
+func TestStructConsistency(t *testing.T) {
+	t.Run("deref_entry_t", func(t *testing.T) {
+		compareStructTypes(t, deref_entry_t{}, testhelper.Deref_entry_t{})
+	})
+	t.Run("function_parameter_t", func(t *testing.T) {
+		compareStructTypes(t, function_parameter_t{}, testhelper.Function_parameter_t{})
+	})
+	t.Run("function_parameter_list_t", func(t *testing.T) {
+		compareStructTypes(t, function_parameter_list_t{}, testhelper.Function_parameter_list_t{})
 	})
 }

@@ -1450,9 +1450,10 @@ func TestTraceEBPFTypes(t *testing.T) {
 		if bytes.Contains(output, []byte("type not supported")) {
 			t.Fatalf("pointer type should be supported, got:\n%s", string(output))
 		}
-		addrRe := regexp.MustCompile(`main\.tracedPointer\(\(\*`)
-		if !addrRe.Match(output) {
-			t.Fatalf("expected pointer values in output, got:\n%s", string(output))
+		// At default verbosity (0), pointers are shown as addresses to match
+		// the ptrace backend's ShortLoadConfig (FollowPointers: false).
+		if !bytes.Contains(output, []byte("(*int)(0x")) || !bytes.Contains(output, []byte("(*uint64)(0x")) {
+			t.Fatalf("expected pointer addresses in output, got:\n%s", string(output))
 		}
 	})
 
@@ -1463,9 +1464,119 @@ func TestTraceEBPFTypes(t *testing.T) {
 		if bytes.Contains(output, []byte("type not supported")) {
 			t.Fatalf("slice type should be supported, got:\n%s", string(output))
 		}
-		sliceRe := regexp.MustCompile(`main\.tracedSlice\(\[\]`)
-		if !sliceRe.Match(output) {
-			t.Fatalf("expected slice value in output, got:\n%s", string(output))
+		// At default verbosity (0), slice elements are not shown (MaxArrayValues: 0)
+		// to match the ptrace backend's ShortLoadConfig. The slice header is shown.
+		if !bytes.Contains(output, []byte("[]uint8 len: 3, cap: 3,")) {
+			t.Fatalf("expected slice header in output, got:\n%s", string(output))
+		}
+	})
+
+	// Test struct types with scalar fields
+	t.Run("Structs", func(t *testing.T) {
+		t.Parallel()
+		output := runEBPFTrace(t, "main.tracedStruct")
+		filtered := filterProcessExitLines(output)
+		// C (float64) is in an XMM register which eBPF uprobes cannot read, so it shows as 0.
+		// Goroutine IDs are non-deterministic across runs, so match with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedStruct\(main\.SimpleStruct \{A: 42, B: true, C: 0\}\)\n>> goroutine\(\d+\): main\.tracedStruct => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
+		}
+	})
+
+	// Test struct with pointer and string fields
+	t.Run("StructsWithPointers", func(t *testing.T) {
+		t.Parallel()
+		output := runEBPFTrace(t, "main.tracedPtrStruct")
+		filtered := filterProcessExitLines(output)
+		// Y is a pointer whose address is non-deterministic; match the full format with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedPtrStruct\(main\.PtrStruct \{X: 1, Y: \(\*int\)\(0x[0-9a-f]+\), Z: "hello"\}\)\n>> goroutine\(\d+\): main\.tracedPtrStruct => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
+		}
+	})
+
+	// Test nested struct (pointer to struct dereferenced)
+	t.Run("NestedStructs", func(t *testing.T) {
+		t.Parallel()
+		output := runEBPFTrace(t, "main.tracedNestedStruct")
+		filtered := filterProcessExitLines(output)
+		// Inner is a pointer whose address is non-deterministic; match the full format with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedNestedStruct\(main\.Outer \{Name: "outer", Inner: \(\*main\.Inner\)\(0x[0-9a-f]+\)\}\)\n>> goroutine\(\d+\): main\.tracedNestedStruct => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
+		}
+	})
+
+	// Test array of scalars
+	t.Run("Arrays", func(t *testing.T) {
+		t.Parallel()
+		// Anchor the regex so it doesn't also match main.tracedArrayOfStructs.
+		output := runEBPFTrace(t, "main.tracedArray$")
+		filtered := filterProcessExitLines(output)
+		// At verbosity 0 (ShortLoadConfig), arrays show type but no elements.
+		// Goroutine IDs are non-deterministic across runs, so match with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedArray\(\[4\]int \[\.{3}\]\)\n>> goroutine\(\d+\): main\.tracedArray => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
+		}
+	})
+
+	// Test array of structs
+	t.Run("ArrayOfStructs", func(t *testing.T) {
+		t.Parallel()
+		output := runEBPFTrace(t, "main.tracedArrayOfStructs")
+		if bytes.Contains(output, []byte("not yet supported")) {
+			t.Fatalf("array of structs should be supported, got:\n%s", string(output))
+		}
+		filtered := filterProcessExitLines(output)
+		// At verbosity 0 (ShortLoadConfig), array elements are not expanded.
+		// Goroutine IDs are non-deterministic across runs, so match with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedArrayOfStructs\(\[2\]main\.SimpleStruct \[\.{3}\]\)\n>> goroutine\(\d+\): main\.tracedArrayOfStructs => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
+		}
+	})
+
+	// Test slice of structs
+	t.Run("SliceOfStructs", func(t *testing.T) {
+		t.Parallel()
+		output := runEBPFTrace(t, "main.tracedSliceOfStructs")
+		if bytes.Contains(output, []byte("not yet supported")) {
+			t.Fatalf("slice of structs should be supported, got:\n%s", string(output))
+		}
+		filtered := filterProcessExitLines(output)
+		// At verbosity 0 (ShortLoadConfig), slice elements are not expanded.
+		// Goroutine IDs are non-deterministic across runs, so match with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedSliceOfStructs\(\[\]main\.SimpleStruct len: 2, cap: 2, \[\.{3}\]\)\n>> goroutine\(\d+\): main\.tracedSliceOfStructs => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
+		}
+	})
+
+	// Test large struct (9008 bytes, exceeds MAX_VAL_SIZE=8192)
+	t.Run("LargeStruct", func(t *testing.T) {
+		t.Parallel()
+		output := runEBPFTrace(t, "main.tracedBigStruct")
+		filtered := filterProcessExitLines(output)
+		// BigStruct is 9008 bytes, exceeding MAX_VAL_SIZE=8192. Data is truncated
+		// to [...] and Tag overflows the buffer, shown as unreadable.
+		// Goroutine IDs are non-deterministic across runs, so match with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedBigStruct\(main\.BigStruct \{Data: \[9000\]uint8 \[\.{3}\], Tag: \(unreadable read out of bounds\)\}\)\n>> goroutine\(\d+\): main\.tracedBigStruct => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
+		}
+	})
+
+	// Test nil pointer field in struct: PtrStruct{X: 1, Y: nil, Z: ""}
+	t.Run("NilPointerField", func(t *testing.T) {
+		t.Parallel()
+		output := runEBPFTrace(t, "main.tracedNilPtr")
+		filtered := filterProcessExitLines(output)
+		// Goroutine IDs are non-deterministic across runs, so match with a regex.
+		pattern := regexp.MustCompile(`^> goroutine\(\d+\): main\.tracedNilPtr\(main\.PtrStruct \{X: 1, Y: \*int nil, Z: ""\}\)\n>> goroutine\(\d+\): main\.tracedNilPtr => \(\)\n$`)
+		if !pattern.MatchString(string(filtered)) {
+			t.Fatalf("output did not match expected pattern, got:\n%s", string(filtered))
 		}
 	})
 }
@@ -1621,6 +1732,7 @@ func TestTraceVerbosityBackendParityLevel2(t *testing.T) {
 		t.Fatal("ebpf backend produced no output")
 	}
 
+	// Filter out process exit messages
 	ptraceFiltered := filterProcessExitLines(ptraceOutput)
 	ebpfFiltered := filterProcessExitLines(ebpfOutput)
 

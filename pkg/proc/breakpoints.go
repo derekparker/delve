@@ -672,6 +672,9 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 			}
 		}
 
+		// Build dereference plan from the DWARF type.
+		derefs, numDerefs := ebpf.BuildDerefPlan(dt)
+
 		args = append(args, ebpf.UProbeArgMap{
 			Offset:    offset,
 			Size:      dt.Size(),
@@ -679,6 +682,8 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 			Pieces:    paramPieces,
 			InReg:     len(pieces) > 0,
 			Ret:       isret,
+			Derefs:    derefs,
+			NumDerefs: numDerefs,
 			DwarfType: dt,
 			Name:      name,
 		})

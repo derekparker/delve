@@ -31,38 +31,59 @@ const (
 	// parameter values that live in a fake memory region. pkg/proc uses this
 	// same value (via its own fakeAddressUnresolv constant) for composite
 	// memory and CPU register variables; both must stay in sync.
+	// TODO(deparker): should be possible to refactor the codebase a bit to clean this up
+	// and share the constant instead of duplicating it.
 	fakeAddressUnresolv = 0xbeed000000000000
+	maxValSize          = 8192 // MAX_VAL_SIZE from function_vals.bpf.h
+	maxDerefs           = 8    // MAX_DEREFS from function_vals.bpf.h
+
+	// MaxDerefEntrySize is the number of bytes per individual deref entry slot
+	// in the ring buffer. Must match DEREF_ENTRY_SIZE in function_vals.bpf.h.
+	MaxDerefEntrySize = 2048
+
+	maxDerefSize = maxDerefs * MaxDerefEntrySize // total deref region per param (16384)
+
+	maxSliceElems          = 64
+	defaultUnknownTypeSize = 8
 
 	// Event type tags matching the BPF wire format.
 	eventTypeHeader = 0
 	eventTypeParam  = 1
 
-	// maxValSize is the maximum byte size for val and deref_val buffers,
-	// matching MAX_VAL_SIZE in trace.bpf.c.
-	maxValSize = 0x30
-
 	// Wire sizes of packed BPF ring buffer events.
 	// Fields: type(1) + goroutine_id(8) + fn_addr(8) + is_ret(1) + n_params(4)
-	eventHeaderWireSize = 1 + 8 + 8 + 1 + 4
-	// Fields: type(1) + goroutine_id(8) + fn_addr(8) + param_idx(1) + is_ret(1) + kind(4) + val_size(4)
-	paramEventWireSize = 1 + 8 + 8 + 1 + 1 + 4 + 4
-	// paramEventWireSize + val + deref_val
-	paramEventDataWireSize = paramEventWireSize + maxValSize + maxValSize
+	eventHeaderWireSize = 1 + 8 + 8 + 1 + 4 // 22 bytes
+	// Fields: type(1) + goroutine_id(8) + fn_addr(8) + param_idx(1) + is_ret(1) + kind(4) + val_size(4) + n_derefs(4) + deref_sizes(maxDerefs*4)
+	paramEventWireSize = 1 + 8 + 8 + 1 + 1 + 4 + 4 + 4 + maxDerefs*4 // 63 bytes
+
+	// paramEventDerefSizesOffset is the byte offset of Deref_sizes[0] in the
+	// param event wire format: type(1)+goroutine_id(8)+fn_addr(8)+param_idx(1)+is_ret(1)+kind(4)+val_size(4)+n_derefs(4)=31.
+	paramEventDerefSizesOffset = paramEventWireSize - maxDerefs*4
 
 	maxPendingEvents = 1000
 )
 
+// deref_entry_t tracks deref_entry_t from function_vals.bpf.h
+type deref_entry_t struct {
+	offset uint32
+	size   uint32
+}
+
 // function_parameter_t tracks function_parameter_t from function_vals.bpf.h
 type function_parameter_t struct {
-	kind      uint32
-	size      uint32
-	offset    int32
-	in_reg    bool
-	n_pieces  int32
-	reg_nums  [6]int32
-	daddr     uint64
-	val       [maxValSize]byte
-	deref_val [maxValSize]byte
+	kind     uint32
+	size     uint32
+	offset   int32
+	in_reg   bool
+	_        [3]byte // padding to align n_pieces to 4-byte boundary
+	n_pieces int32
+	reg_nums [6]int32
+
+	n_derefs uint32
+	derefs   [8]deref_entry_t
+
+	val_size         uint32
+	total_deref_size uint32
 }
 
 // function_parameter_list_t tracks function_parameter_list_t from function_vals.bpf.h
@@ -100,6 +121,8 @@ type param_event_t struct {
 	Is_ret       bool
 	Kind         uint32
 	Val_size     uint32
+	N_derefs     uint32
+	Deref_sizes  [8]uint32
 }
 
 // dwarfTypeKey identifies a parameter for DWARF type lookup using a global
@@ -363,6 +386,11 @@ func parseParamEvent(b []byte) (param_event_t, bool) {
 	p.Is_ret = b[18] != 0
 	p.Kind = binary.LittleEndian.Uint32(b[19:23])
 	p.Val_size = binary.LittleEndian.Uint32(b[23:27])
+	p.N_derefs = binary.LittleEndian.Uint32(b[27:31])
+	for i := 0; i < 8; i++ {
+		off := paramEventDerefSizesOffset + i*4
+		p.Deref_sizes[i] = binary.LittleEndian.Uint32(b[off : off+4])
+	}
 	return p, true
 }
 
@@ -435,27 +463,62 @@ func (ctx *EBPFContext) handleParamEvent(raw []byte) {
 	iparam.Kind = reflect.Kind(pe.Kind)
 	iparam.Addr = fakeAddressUnresolv
 
-	// Extract val and deref_val from fixed offsets after the param event header.
-	valStart := paramEventWireSize
-	derefValStart := paramEventWireSize + maxValSize
+	// Extract val data from the wire format after the param event header.
+	valSize := min(int(pe.Val_size), maxValSize)
+	nDerefs := min(int(pe.N_derefs), maxDerefs)
 
-	data := make([]byte, 2*maxValSize)
-	if valStart+maxValSize <= len(raw) {
-		copy(data[:maxValSize], raw[valStart:valStart+maxValSize])
-	}
-	if derefValStart+maxValSize <= len(raw) {
-		copy(data[maxValSize:], raw[derefValStart:derefValStart+maxValSize])
-	}
-	iparam.Data = data
-
-	valSize := int(pe.Val_size)
-	if valSize > maxValSize {
-		valSize = maxValSize
+	dataStart := paramEventWireSize
+	if valSize > 0 && dataStart+valSize <= len(raw) {
+		iparam.Data = make([]byte, valSize)
+		copy(iparam.Data, raw[dataStart:dataStart+valSize])
+	} else {
+		iparam.Data = make([]byte, 0)
 	}
 
-	iparam.Pieces = []op.Piece{
-		{Size: valSize, Kind: op.AddrPiece, Val: fakeAddressUnresolv},
-		{Size: maxValSize, Kind: op.AddrPiece, Val: fakeAddressUnresolv + uint64(valSize)},
+	// derefRegionStart is correct only when n_derefs > 0: the BPF program
+	// always emits a full MAX_VAL_SIZE-byte val region before the deref
+	// slots when any derefs are present, so the fixed stride formula holds.
+	// For n_derefs == 0 the event is shorter, but derefRegionStart is only
+	// used below when totalDerefSize > 0, which implies n_derefs > 0.
+	derefRegionStart := dataStart + maxValSize
+	var totalDerefSize int
+	for j := 0; j < nDerefs; j++ {
+		sz := min(int(pe.Deref_sizes[j]), MaxDerefEntrySize)
+		totalDerefSize += sz
+	}
+
+	if totalDerefSize > 0 {
+		iparam.DerefData = make([]byte, totalDerefSize)
+		dst := 0
+		truncated := false
+		for j := 0; j < nDerefs; j++ {
+			sz := min(int(pe.Deref_sizes[j]), MaxDerefEntrySize)
+			if sz == 0 {
+				continue
+			}
+			srcOff := derefRegionStart + j*MaxDerefEntrySize
+			if srcOff+sz <= len(raw) {
+				copy(iparam.DerefData[dst:dst+sz], raw[srcOff:srcOff+sz])
+			} else {
+				logflags.DebuggerLogger().Debugf("ebpf: deref entry %d for fn=%#x param_idx=%d truncated: event len=%d, needed bytes [%d:%d]", j, pe.Fn_addr, pe.Param_idx, len(raw), srcOff, srcOff+sz)
+				truncated = true
+			}
+			dst += sz
+		}
+		if truncated {
+			iparam.Unreadable = fmt.Errorf("eBPF ring buffer event truncated")
+		}
+	}
+
+	if totalDerefSize > 0 {
+		iparam.Pieces = []op.Piece{
+			{Size: valSize, Kind: op.AddrPiece, Val: fakeAddressUnresolv},
+			{Size: totalDerefSize, Kind: op.AddrPiece, Val: fakeAddressUnresolv + uint64(valSize)},
+		}
+	} else {
+		iparam.Pieces = []op.Piece{
+			{Size: valSize, Kind: op.AddrPiece, Val: fakeAddressUnresolv},
+		}
 	}
 
 	// Map BPF's per-direction param_idx to the global DWARF type index.
@@ -528,6 +591,220 @@ func (ctx *EBPFContext) emitParsedEvent(pe *pendingEvent) {
 	ctx.parsedBpfEvents = append(ctx.parsedBpfEvents, result)
 }
 
+const maxStringDerefSize = 256
+
+// BuildDerefPlan walks a DWARF type one level deep and produces a
+// dereference plan for pointer fields that the eBPF program should chase.
+// Returns the plan and the number of valid entries.
+func BuildDerefPlan(typ godwarf.Type) (derefs [8]DerefEntry, numDerefs uint32) {
+	// Named Go types (structs, pointers, etc.) are often DW_TAG_typedef
+	// wrappers in DWARF. Resolve to the concrete type so the switch below
+	// correctly matches StructType, PtrType, etc.
+	typ = godwarf.ResolveTypedef(typ)
+	switch t := typ.(type) {
+	case *godwarf.PtrType:
+		pointedSize := t.Type.Size()
+		if pointedSize <= 0 {
+			pointedSize = defaultUnknownTypeSize
+		}
+		derefs[0] = DerefEntry{Offset: 0, Size: uint32(min(pointedSize, MaxDerefEntrySize))}
+		numDerefs = 1
+
+	case *godwarf.StructType:
+		numDerefs = buildStructDerefPlan(t, &derefs)
+
+	case *godwarf.ArrayType:
+		numDerefs = buildArrayDerefPlan(t, &derefs)
+
+	case *godwarf.SliceType:
+		elemSize := t.ElemType.Size()
+		if elemSize <= 0 {
+			elemSize = defaultUnknownTypeSize
+		}
+		derefs[0] = DerefEntry{Offset: 0, Size: uint32(min(elemSize*maxSliceElems, MaxDerefEntrySize))}
+		numDerefs = 1
+
+	case *godwarf.StringType:
+		// String header: {ptr, len}. Deref the data pointer at offset 0.
+		derefs[0] = DerefEntry{Offset: 0, Size: maxStringDerefSize}
+		numDerefs = 1
+	}
+
+	return
+}
+
+// buildStructDerefPlan builds dereference entries for pointer-like fields
+// in a struct. Returns the number of deref entries.
+func buildStructDerefPlan(st *godwarf.StructType, derefs *[8]DerefEntry) uint32 {
+	var count uint32
+
+	// First pass: count pointer-like fields (resolve typedefs so named types
+	// wrapping pointer/string/slice are not missed).
+	var ptrFieldCount int
+	for _, field := range st.Field {
+		if isDerefableType(godwarf.ResolveTypedef(field.Type)) {
+			ptrFieldCount++
+		}
+	}
+	if ptrFieldCount == 0 {
+		return 0
+	}
+
+	// Compute per-deref budget, capped at the BPF slot size.
+	budget := int64(maxDerefSize)
+	if ptrFieldCount > maxDerefs {
+		ptrFieldCount = maxDerefs
+	}
+	perDerefBudget := min(budget/int64(ptrFieldCount), MaxDerefEntrySize)
+
+	for _, field := range st.Field {
+		if count >= maxDerefs {
+			break
+		}
+		switch ft := godwarf.ResolveTypedef(field.Type).(type) {
+		case *godwarf.PtrType:
+			pointedSize := ft.Type.Size()
+			if pointedSize <= 0 {
+				pointedSize = defaultUnknownTypeSize
+			}
+			derefs[count] = DerefEntry{
+				Offset: uint32(field.ByteOffset),
+				Size:   uint32(min(pointedSize, perDerefBudget)),
+			}
+			count++
+
+		case *godwarf.StringType:
+			derefs[count] = DerefEntry{
+				Offset: uint32(field.ByteOffset),
+				Size:   uint32(min(int64(maxStringDerefSize), perDerefBudget)),
+			}
+			count++
+
+		case *godwarf.SliceType:
+			elemSize := ft.ElemType.Size()
+			if elemSize <= 0 {
+				elemSize = defaultUnknownTypeSize
+			}
+			derefs[count] = DerefEntry{
+				Offset: uint32(field.ByteOffset),
+				Size:   uint32(min(elemSize*maxSliceElems, perDerefBudget)),
+			}
+			count++
+		}
+	}
+
+	return count
+}
+
+// buildArrayDerefPlan builds dereference entries for arrays whose elements
+// contain pointers. Returns the number of deref entries.
+func buildArrayDerefPlan(at *godwarf.ArrayType, derefs *[8]DerefEntry) uint32 {
+	// Only build deref entries if the element type has pointer-like fields.
+	// For arrays of scalars, no dereference is needed.
+	elemType := godwarf.ResolveTypedef(at.Type)
+	if !typeContainsPointers(elemType) {
+		return 0
+	}
+
+	// For arrays of structs with pointers, we build deref entries
+	// for the pointer fields of each element, up to the deref budget.
+	var count uint32
+	elemSize := elemType.Size()
+	if elemSize <= 0 {
+		return 0
+	}
+
+	numElems := at.Count
+	if numElems <= 0 {
+		return 0
+	}
+
+	for i := int64(0); i < numElems && count < maxDerefs; i++ {
+		elemOffset := i * elemSize
+
+		// For each element, check if it's a struct with pointer fields.
+		switch et := elemType.(type) {
+		case *godwarf.PtrType:
+			pointedSize := et.Type.Size()
+			if pointedSize <= 0 {
+				pointedSize = defaultUnknownTypeSize
+			}
+			pointedSize = min(pointedSize, MaxDerefEntrySize)
+			derefs[count] = DerefEntry{
+				Offset: uint32(elemOffset),
+				Size:   uint32(pointedSize),
+			}
+			count++
+		case *godwarf.StructType:
+			for _, field := range et.Field {
+				if count >= maxDerefs {
+					break
+				}
+				fieldOffset := elemOffset + field.ByteOffset
+				switch ft := godwarf.ResolveTypedef(field.Type).(type) {
+				case *godwarf.PtrType:
+					pointedSize := ft.Type.Size()
+					if pointedSize <= 0 {
+						pointedSize = defaultUnknownTypeSize
+					}
+					pointedSize = min(pointedSize, MaxDerefEntrySize)
+					derefs[count] = DerefEntry{
+						Offset: uint32(fieldOffset),
+						Size:   uint32(pointedSize),
+					}
+					count++
+				case *godwarf.StringType:
+					derefs[count] = DerefEntry{
+						Offset: uint32(fieldOffset),
+						Size:   uint32(min(int64(maxStringDerefSize), MaxDerefEntrySize)),
+					}
+					count++
+				case *godwarf.SliceType:
+					elemSz := ft.ElemType.Size()
+					if elemSz <= 0 {
+						elemSz = defaultUnknownTypeSize
+					}
+					derefSize := min(elemSz*maxSliceElems, MaxDerefEntrySize)
+					derefs[count] = DerefEntry{
+						Offset: uint32(fieldOffset),
+						Size:   uint32(derefSize),
+					}
+					count++
+				}
+			}
+		}
+	}
+
+	return count
+}
+
+// isDerefableType returns true if a type is a pointer, string, or slice
+// (types that require dereferencing).
+func isDerefableType(t godwarf.Type) bool {
+	switch t.(type) {
+	case *godwarf.PtrType, *godwarf.StringType, *godwarf.SliceType:
+		return true
+	}
+	return false
+}
+
+// typeContainsPointers returns true if a type contains pointer-like fields
+// that benefit from dereferencing.
+func typeContainsPointers(t godwarf.Type) bool {
+	t = godwarf.ResolveTypedef(t)
+	switch ct := t.(type) {
+	case *godwarf.PtrType, *godwarf.StringType, *godwarf.SliceType:
+		return true
+	case *godwarf.StructType:
+		for _, field := range ct.Field {
+			if isDerefableType(godwarf.ResolveTypedef(field.Type)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // synthesizeTypeFromKind creates a godwarf.Type from a reflect.Kind
 // for parameters that don't have a full DWARF type (backward
 // compatibility with scalar types).
@@ -590,6 +867,29 @@ func createFunctionParameterList(entry uint64, goidOffset int64, args []UProbeAr
 		param.size = uint32(arg.Size)
 		param.offset = int32(arg.Offset)
 		param.kind = uint32(arg.Kind)
+
+		// Cap val_size at MAX_VAL_SIZE.
+		if arg.Size > maxValSize {
+			param.val_size = maxValSize
+		} else {
+			param.val_size = uint32(arg.Size)
+		}
+
+		// Copy dereference plan. Cap each individual deref size at
+		// MaxDerefEntrySize (DEREF_ENTRY_SIZE in BPF) so the BPF program's
+		// fixed-stride ring buffer slots are not exceeded.
+		n := min(arg.NumDerefs, maxDerefs)
+		param.n_derefs = n
+		var totalDerefSize uint32
+		for i := uint32(0); i < n; i++ {
+			sz := min(arg.Derefs[i].Size, MaxDerefEntrySize)
+			param.derefs[i].offset = arg.Derefs[i].Offset
+			param.derefs[i].size = sz
+			totalDerefSize += sz
+		}
+		totalDerefSize = min(totalDerefSize, maxDerefSize)
+		param.total_deref_size = totalDerefSize
+
 		if arg.InReg {
 			param.in_reg = true
 			param.n_pieces = int32(len(arg.Pieces))

@@ -1,14 +1,17 @@
 package proc
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"go/constant"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/goversion"
 	"github.com/go-delve/delve/pkg/logflags"
@@ -491,6 +494,104 @@ type UProbeTraceResult struct {
 	ReturnParams []*Variable
 }
 
+// rewritePointersToFakeAddresses rewrites pointer values in fullData to point
+// to fake addresses that correspond to deref data regions, so that
+// loadValueInternal can follow pointers into the cached memory buffer.
+//
+// Returns a map from fake addresses to the original pointer values so
+// callers can restore real addresses on Variable children after loading.
+//
+// Uses BuildDerefPlan as the single source of truth for pointer offsets
+// and deref sizes. This guarantees the rewriting matches what the eBPF
+// program captured, since both use the same plan.
+//
+// The caller is responsible for updating ip.Pieces to reflect the merged
+// val+deref layout before creating composite memory.
+func rewritePointersToFakeAddresses(ip *ebpf.RawUProbeParam, fullData []byte) map[uint64]uint64 {
+	if ip.DwarfType == nil {
+		return nil
+	}
+
+	valSize := uint64(len(ip.Data))
+
+	// Use BuildDerefPlan to get the exact same offsets and sizes that were
+	// used to populate the eBPF arg map and execute the dereference plan.
+	derefs, numDerefs := ebpf.BuildDerefPlan(ip.DwarfType)
+
+	fakeToReal := make(map[uint64]uint64, numDerefs)
+
+	// Rewrite each pointer in the captured data to point to the
+	// corresponding fake address in the deref data region.
+	derefOffset := uint64(0)
+	for i := uint32(0); i < numDerefs; i++ {
+		de := derefs[i]
+
+		// Bounds check: ensure the pointer location is within ip.Data.
+		if uint64(de.Offset)+8 > uint64(len(ip.Data)) {
+			ip.Unreadable = fmt.Errorf("deref offset %d out of bounds (data size %d) - plan/eBPF mismatch", de.Offset, len(ip.Data))
+			return nil
+		}
+
+		// Bounds check: ensure we won't write past the end of fullData.
+		if uint64(de.Offset)+8 > uint64(len(fullData)) {
+			ip.Unreadable = fmt.Errorf("deref offset %d exceeds fullData size %d - buffer allocation error", de.Offset, len(fullData))
+			return nil
+		}
+
+		// Skip entries with zero size (can happen if the BPF program
+		// failed to dereference a pointer). handleParamEvent also skips
+		// these when packing DerefData, so no data region was allocated.
+		if de.Size == 0 {
+			continue
+		}
+
+		realAddr := binary.LittleEndian.Uint64(fullData[de.Offset : de.Offset+8])
+
+		derefSize := uint64(de.Size)
+		if derefSize > ebpf.MaxDerefEntrySize {
+			derefSize = ebpf.MaxDerefEntrySize
+		}
+
+		// Skip nil pointers: leave the zero value in place so loadPtr
+		// recognizes it as nil. Still advance derefOffset past the
+		// (zero-filled) deref data slot.
+		if realAddr == 0 {
+			derefOffset += derefSize
+			continue
+		}
+
+		// Assign fake address pointing into the deref data region.
+		fakeAddr := fakeAddressUnresolv + valSize + derefOffset
+		binary.LittleEndian.PutUint64(fullData[de.Offset:de.Offset+8], fakeAddr)
+
+		fakeToReal[fakeAddr] = realAddr
+
+		derefOffset += derefSize
+	}
+	return fakeToReal
+}
+
+// restoreRealAddresses walks a Variable tree and replaces fake pointer
+// addresses with the original process addresses captured by the eBPF
+// ring buffer. This ensures pointer display matches the ptrace backend.
+func restoreRealAddresses(v *Variable, fakeToReal map[uint64]uint64) {
+	if len(fakeToReal) == 0 {
+		return
+	}
+	for i := range v.Children {
+		if real, ok := fakeToReal[v.Children[i].Addr]; ok {
+			v.Children[i].Addr = real
+		}
+		restoreRealAddresses(&v.Children[i], fakeToReal)
+	}
+	// Fix pointer Value to match the restored child address.
+	// loadPtr sets v.Value = constant.MakeUint64(child.Addr) using the
+	// fake address; restore it so pointer display shows the real address.
+	if (v.Kind == reflect.Ptr || v.Kind == reflect.UnsafePointer) && len(v.Children) > 0 {
+		v.Value = constant.MakeUint64(v.Children[0].Addr)
+	}
+}
+
 func (t *Target) GetBufferedTracepoints(cfg LoadConfig) []*UProbeTraceResult {
 	var results []*UProbeTraceResult
 	tracepoints := t.proc.GetBufferedTracepoints()
@@ -505,6 +606,29 @@ func (t *Target) GetBufferedTracepoints(cfg LoadConfig) []*UProbeTraceResult {
 		v.Kind = ip.Kind
 		v.bi = t.BinInfo()
 
+		if v.Kind == reflect.Array {
+			if at, ok := v.RealType.(*godwarf.ArrayType); ok {
+				v.Base = ip.Addr
+				v.Len = at.Count
+				v.Cap = at.Count
+				v.fieldType = at.Type
+				v.stride = 0
+				if at.Count > 0 {
+					v.stride = at.ByteSize / at.Count
+				}
+			}
+		}
+
+		if v.Kind == reflect.Slice {
+			if st, ok := v.RealType.(*godwarf.SliceType); ok && len(ip.Data) >= 24 {
+				v.Base = fakeAddressUnresolv + uint64(len(ip.Data))
+				v.Len = int64(binary.LittleEndian.Uint64(ip.Data[8:16]))
+				v.Cap = int64(binary.LittleEndian.Uint64(ip.Data[16:24]))
+				v.fieldType = st.ElemType
+				v.stride = st.ElemType.Size()
+			}
+		}
+
 		if ip.Unreadable != nil {
 			v.Unreadable = ip.Unreadable
 			return v
@@ -514,8 +638,34 @@ func (t *Target) GetBufferedTracepoints(cfg LoadConfig) []*UProbeTraceResult {
 			return v
 		}
 
-		cachedMem := CreateLoadedCachedMemory(ip.Data)
-		compMem, compErr := CreateCompositeMemory(cachedMem, t.BinInfo().Arch, op.DwarfRegisters{}, ip.Pieces, ip.RealType.Common().ByteSize)
+		// Build the cached memory from val data + deref data.
+		var fullData []byte
+		if len(ip.DerefData) > 0 {
+			fullData = make([]byte, len(ip.Data)+len(ip.DerefData))
+			copy(fullData, ip.Data)
+			copy(fullData[len(ip.Data):], ip.DerefData)
+		} else {
+			fullData = ip.Data
+		}
+
+		// If we have a DWARF type with pointer fields, rewrite pointer
+		// values in fullData to point to fake addresses so that
+		// loadValueInternal can follow them into the deref data region.
+		// Then merge the val+deref regions into a single piece so
+		// composite memory covers the whole buffer.
+		var fakeToReal map[uint64]uint64
+		pieces := ip.Pieces
+		if ip.DwarfType != nil && len(ip.DerefData) > 0 {
+			fakeToReal = rewritePointersToFakeAddresses(ip, fullData)
+			// Merge into one piece spanning the whole val+deref buffer so
+			// CreateCompositeMemory covers both regions from a single base.
+			pieces = []op.Piece{
+				{Size: len(fullData), Kind: op.AddrPiece, Val: fakeAddressUnresolv},
+			}
+		}
+
+		cachedMem := CreateLoadedCachedMemory(fullData)
+		compMem, compErr := CreateCompositeMemory(cachedMem, t.BinInfo().Arch, op.DwarfRegisters{}, pieces, ip.RealType.Common().ByteSize)
 		if compErr != nil {
 			v.Unreadable = fmt.Errorf("ebpf composite memory: %w", compErr)
 			return v
@@ -523,6 +673,7 @@ func (t *Target) GetBufferedTracepoints(cfg LoadConfig) []*UProbeTraceResult {
 		v.mem = compMem
 
 		v.loadValue(cfg)
+		restoreRealAddresses(v, fakeToReal)
 
 		return v
 	}
