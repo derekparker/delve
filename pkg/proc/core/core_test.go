@@ -371,6 +371,61 @@ func TestCoreCGOAssert(t *testing.T) {
 	}
 }
 
+// TestCoreCGONoreturnGo verifies that Go function frames appear when calling
+// noreturn C functions. This test covers cases where the narrow fix in #4374
+// would not apply (Go functions calling C noreturn, not C-to-C).
+func TestCoreCGONoreturnGo(t *testing.T) {
+	t.Parallel()
+	mustSupportCore(t)
+
+	grp, _ := withCoreFile(t, "cgonoreturngo", "")
+	p := grp.Selected
+
+	gs, _, err := proc.GoroutinesInfo(p, 0, 0)
+	if err != nil || len(gs) == 0 {
+		t.Fatalf("GoroutinesInfo() = %v, %v; wanted at least one goroutine", gs, err)
+	}
+
+	// Find the goroutine running main.main and check its stack.
+	var mainStack []proc.Stackframe
+	for _, g := range gs {
+		stack, err := proc.GoroutineStacktrace(p, g, 20, 0)
+		if err != nil {
+			t.Errorf("Stacktrace() on goroutine %v = %v", g, err)
+			continue
+		}
+		for _, frame := range stack {
+			if frame.Call.Fn != nil && frame.Call.Fn.Name == "main.main" {
+				mainStack = stack
+				break
+			}
+		}
+		if mainStack != nil {
+			break
+		}
+	}
+	if mainStack == nil {
+		t.Fatal("could not find main goroutine")
+	}
+
+	found := make(map[string]bool)
+	for _, frame := range mainStack {
+		if frame.Call.Fn != nil {
+			found[frame.Call.Fn.Name] = true
+		}
+	}
+
+	// The narrow fix in #4374 only adjusted PC when landing exactly at a C
+	// function entry. This test verifies that goCallsNoreturn appears in the
+	// backtrace even though it's a Go function, demonstrating the need for
+	// universal PC adjustment.
+	for _, name := range []string{"main.goCallsNoreturn", "C.noreturn_c"} {
+		if !found[name] {
+			t.Errorf("function frame %q missing from backtrace", name)
+		}
+	}
+}
+
 func TestCoreFpRegisters(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "linux" || runtime.GOARCH == "386" {

@@ -262,6 +262,29 @@ func newStackIterator(tgt *Target, bi *BinaryInfo, mem MemoryReadWriter, regs op
 	return &stackIterator{pc: regs.PC(), regs: regs, top: true, target: tgt, bi: bi, mem: mem, err: nil, atend: false, stackhi: stackhi, systemstack: systemstack, g: g, opts: opts}
 }
 
+// CanonicalPC returns the PC adjusted for use in lookups (function, line, FDE).
+// For non-top, non-signal frames, we return pc-1.
+//
+// When calling a function which the compiler knows will never return
+// (for instance abort), the call may be the very last instruction in the
+// calling function. The resume address will point after the call and may
+// be at the beginning of a different function entirely.
+//
+// By subtracting 1 from the PC, we ensure lookups attribute the frame
+// to the correct function - the one containing the call, not the next
+// function in memory.
+//
+// This adjustment is safe even when PC is not at a function boundary,
+// because lookups use address ranges that include PC-1 when PC is
+// genuinely within the function body.
+func (it *stackIterator) CanonicalPC() uint64 {
+	// Don't adjust the top frame (actual execution point) or signal returns
+	if it.top || it.sigret || it.pc == 0 {
+		return it.pc
+	}
+	return it.pc - 1
+}
+
 // Next points the iterator to the next stack frame.
 func (it *stackIterator) Next() bool {
 	if it.err != nil || it.atend {
@@ -281,15 +304,6 @@ func (it *stackIterator) Next() bool {
 			fmt.Fprintf(w, " %s = %#x", name, reg.Uint64Val)
 		}
 		logger.Debugf("%s", w.String())
-	}
-
-	// Adjust return addresses that land on a C function entry due to noreturn calls (e.g. assert).
-	if !it.top && !it.sigret && it.pc > 0 {
-		if fn := it.bi.PCToFunc(it.pc); fn != nil && it.pc == fn.Entry && !fn.cu.isgo {
-			if pfn := it.bi.PCToFunc(it.pc - 1); pfn != nil && pfn != fn {
-				it.pc--
-			}
-		}
 	}
 
 	callFrameRegs, ret, retaddr := it.advanceRegs()
@@ -390,7 +404,10 @@ func (it *stackIterator) newStackframe(ret, retaddr uint64) Stackframe {
 		it.err = NullAddrError{}
 		return Stackframe{}
 	}
-	f, l, fn := it.bi.PCToLine(it.pc)
+	// Use canonical PC for function/line lookup to handle noreturn calls.
+	// See CanonicalPC() documentation for rationale.
+	canonicalPC := it.CanonicalPC()
+	f, l, fn := it.bi.PCToLine(canonicalPC)
 	if fn == nil {
 		f = "?"
 		l = -1
@@ -703,16 +720,19 @@ func (it *stackIterator) tryFramePointerUnwind() (callFrameRegs op.DwarfRegister
 func (it *stackIterator) advanceRegsDWARF() (callFrameRegs op.DwarfRegisters, ret uint64, retaddr uint64) {
 	logger := logflags.StackLogger()
 
-	fde, err := it.bi.frameEntries.FDEForPC(it.pc)
+	// Use canonical PC for FDE lookup to handle noreturn calls correctly.
+	// See CanonicalPC() documentation for rationale.
+	canonicalPC := it.CanonicalPC()
+	fde, err := it.bi.frameEntries.FDEForPC(canonicalPC)
 	var framectx *frame.FrameContext
 	if _, nofde := err.(*frame.ErrNoFDEForPC); nofde {
-		framectx = it.bi.Arch.fixFrameUnwindContext(nil, it.pc, it.bi)
+		framectx = it.bi.Arch.fixFrameUnwindContext(nil, canonicalPC, it.bi)
 	} else {
-		fctxt, err := fde.EstablishFrame(it.pc)
+		fctxt, err := fde.EstablishFrame(canonicalPC)
 		if err != nil {
-			logger.Errorf("Error executing Frame Debug Entry for PC %x: %v", it.pc, err)
+			logger.Errorf("Error executing Frame Debug Entry for PC %x: %v", canonicalPC, err)
 		}
-		framectx = it.bi.Arch.fixFrameUnwindContext(fctxt, it.pc, it.bi)
+		framectx = it.bi.Arch.fixFrameUnwindContext(fctxt, canonicalPC, it.bi)
 	}
 
 	logger.Debugf("advanceRegs (DWARF) at %#x", it.pc)
