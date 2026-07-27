@@ -8,6 +8,21 @@ import (
 )
 
 // Unwind bytes from clang aarch64-windows: save_reg lr@[sp+16], alloc_s 32, end.
+func TestParseARM64Xdata_ClangNoFP(t *testing.T) {
+	// Full xdata record from clang object: header + codes
+	raw := []byte{0x09, 0x00, 0x20, 0x08, 0xd2, 0xc2, 0x02, 0xe4}
+	funcLen, codes, ok := parseARM64Xdata(raw)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if funcLen != 36 {
+		t.Fatalf("funcLen=%d want 36", funcLen)
+	}
+	if len(codes) < 4 || codes[0] != 0xd2 || codes[3] != 0xe4 {
+		t.Fatalf("codes=%x", codes)
+	}
+}
+
 func TestDecodeARM64UnwindCodes_SaveLRAllocS(t *testing.T) {
 	codes := []byte{0xd2, 0xc2, 0x02, 0xe4}
 	fctxt, ok := decodeARM64UnwindCodes(codes)

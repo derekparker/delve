@@ -1,9 +1,44 @@
 package proc
 
 import (
+	"encoding/binary"
+
 	"github.com/go-delve/delve/pkg/dwarf/frame"
 	"github.com/go-delve/delve/pkg/dwarf/regnum"
 )
+
+func parseARM64Xdata(xdata []byte) (funcLen uint32, codes []byte, ok bool) {
+	if len(xdata) < 4 {
+		return 0, nil, false
+	}
+	word0 := binary.LittleEndian.Uint32(xdata[:4])
+
+	funcLenField := word0 & 0x3ffff
+	vers := (word0 >> 18) & 0x3
+	if vers != 0 {
+		return 0, nil, false
+	}
+
+	e := (word0 >> 21) & 1
+	epilogCount := (word0 >> 22) & 0x1f
+	codeWords := (word0 >> 27) & 0x1f
+
+	if epilogCount == 0 && codeWords == 0 {
+		return 0, nil, false
+	}
+
+	off := 4
+	if e == 0 {
+		off += int(epilogCount) * 4
+	}
+
+	codeBytes := int(codeWords) * 4
+	if len(xdata) < off+codeBytes {
+		return 0, nil, false
+	}
+
+	return funcLenField * 4, xdata[off : off+codeBytes], true
+}
 
 func decodeARM64UnwindCodes(codes []byte) (*frame.FrameContext, bool) {
 	finalCFAOff, ok := arm64UnwindFinalCFAOffset(codes)
