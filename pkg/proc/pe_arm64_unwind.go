@@ -13,12 +13,14 @@ func decodeARM64UnwindCodes(codes []byte) (*frame.FrameContext, bool) {
 
 	cfaOff := int64(0)
 	regs := map[uint64]frame.DWRule{}
+	sawEnd := false
 	i := 0
 	for i < len(codes) {
 		op := codes[i]
 		switch {
 		case op == 0xe4: // end
 			i++
+			sawEnd = true
 			goto done
 		case op&0xe0 == 0x00: // alloc_s: 000xxxxx → size = xxxxx * 16
 			cfaOff += int64(op&0x1f) * 16
@@ -74,6 +76,9 @@ func decodeARM64UnwindCodes(codes []byte) (*frame.FrameContext, bool) {
 		}
 	}
 done:
+	if !sawEnd {
+		return nil, false
+	}
 	if finalCFAOff == 0 && len(regs) == 0 {
 		return nil, false
 	}
@@ -90,7 +95,7 @@ func arm64UnwindFinalCFAOffset(codes []byte) (int64, bool) {
 	for i < len(codes) {
 		op := codes[i]
 		switch {
-		case op == 0xe4, op == 0xe1, op == 0xe3: // end, set_fp, nop
+		case op == 0xe4, op == 0xe1: // end, set_fp
 			i++
 		case op&0xe0 == 0x00: // alloc_s
 			cfaOff += int64(op&0x1f) * 16
