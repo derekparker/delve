@@ -30,11 +30,11 @@ func buildPEARM64Unwind(pdata, xdata []byte, imageBase uint64) *peARM64Unwind {
 	for off := 0; off+8 <= len(pdata); off += 8 {
 		beginRVA := binary.LittleEndian.Uint32(pdata[off:])
 		info := binary.LittleEndian.Uint32(pdata[off+4:])
-		flag := info >> 31
+		flag := info & 0x3
 		if flag != 0 {
 			continue
 		}
-		xdataRVA := info & 0x7fffffff
+		xdataRVA := info &^ 0x3
 		xdataOff := xdataRVA - xdataSectionRVA
 		if int(xdataOff) >= len(xdata) {
 			continue

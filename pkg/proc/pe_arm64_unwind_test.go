@@ -153,6 +153,26 @@ func TestDecodeARM64UnwindCodes_IgnoresPaddingAfterEnd(t *testing.T) {
 	}
 }
 
+func TestPEARM64Unwind_SkipsPackedPdataEntry(t *testing.T) {
+	imageBase := uint64(0x100000000)
+	// Valid xdata at offset 0; byte 0 is padding so the same record also parses at offset 1.
+	xdata := []byte{0x00, 0x09, 0x00, 0x20, 0x08, 0xd2, 0xc2, 0x02, 0xe4}
+	pdata := make([]byte, 8)
+	binary.LittleEndian.PutUint32(pdata[0:], 0x1000)
+	// Flag=1 (packed): old bit-31 parsing treats xdata RVA as 1 and would index this entry.
+	binary.LittleEndian.PutUint32(pdata[4:], 1)
+	u := buildPEARM64Unwind(pdata, xdata, imageBase)
+	if u == nil {
+		t.Fatal("nil unwind")
+	}
+	if len(u.entries) != 0 {
+		t.Fatalf("entries=%d want 0 for packed pdata", len(u.entries))
+	}
+	if _, ok := u.FrameContextForPC(imageBase + 0x1000 + 8); ok {
+		t.Fatal("expected miss for packed pdata entry")
+	}
+}
+
 func TestPEARM64Unwind_FrameContextForPC(t *testing.T) {
 	imageBase := uint64(0x100000000)
 	// One pdata entry: begin RVA 0x1000, xdata at RVA 0 — store xdata as section starting at 0 for test
