@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/go-delve/delve/pkg/dwarf/frame"
@@ -149,6 +150,27 @@ func TestDecodeARM64UnwindCodes_IgnoresPaddingAfterEnd(t *testing.T) {
 	}
 	if fctxt.CFA.Offset != 32 {
 		t.Fatalf("CFA offset=%d want 32", fctxt.CFA.Offset)
+	}
+}
+
+func TestPEARM64Unwind_FrameContextForPC(t *testing.T) {
+	imageBase := uint64(0x100000000)
+	// One pdata entry: begin RVA 0x1000, xdata at RVA 0 — store xdata as section starting at 0 for test
+	xdata := []byte{0x09, 0x00, 0x20, 0x08, 0xd2, 0xc2, 0x02, 0xe4}
+	// pdata: begin=0x1000, info=0 (xdata RVA 0, flag 0)
+	pdata := make([]byte, 8)
+	binary.LittleEndian.PutUint32(pdata[0:], 0x1000)
+	binary.LittleEndian.PutUint32(pdata[4:], 0) // flag 0, xdata RVA 0
+	u := buildPEARM64Unwind(pdata, xdata, imageBase)
+	if u == nil {
+		t.Fatal("nil unwind")
+	}
+	fctxt, ok := u.FrameContextForPC(imageBase + 0x1000 + 8) // inside function length 36
+	if !ok || fctxt == nil {
+		t.Fatal("expected hit")
+	}
+	if _, ok := u.FrameContextForPC(imageBase + 0x1000 + 100); ok {
+		t.Fatal("expected miss past end")
 	}
 }
 

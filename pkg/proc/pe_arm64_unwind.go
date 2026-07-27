@@ -2,10 +2,86 @@ package proc
 
 import (
 	"encoding/binary"
+	"sort"
 
 	"github.com/go-delve/delve/pkg/dwarf/frame"
 	"github.com/go-delve/delve/pkg/dwarf/regnum"
 )
+
+type peARM64PdataEntry struct {
+	begin, end uint64
+	xdataOff   uint32
+	packed     uint32
+	isPacked   bool
+}
+
+type peARM64Unwind struct {
+	entries   []peARM64PdataEntry
+	xdata     []byte
+	imageBase uint64
+}
+
+func buildPEARM64Unwind(pdata, xdata []byte, imageBase uint64) *peARM64Unwind {
+	u := &peARM64Unwind{
+		xdata:     xdata,
+		imageBase: imageBase,
+	}
+	const xdataSectionRVA = uint32(0)
+	for off := 0; off+8 <= len(pdata); off += 8 {
+		beginRVA := binary.LittleEndian.Uint32(pdata[off:])
+		info := binary.LittleEndian.Uint32(pdata[off+4:])
+		flag := info >> 31
+		if flag != 0 {
+			continue
+		}
+		xdataRVA := info & 0x7fffffff
+		xdataOff := xdataRVA - xdataSectionRVA
+		if int(xdataOff) >= len(xdata) {
+			continue
+		}
+		funcLen, _, ok := parseARM64Xdata(xdata[xdataOff:])
+		if !ok {
+			continue
+		}
+		begin := imageBase + uint64(beginRVA)
+		u.entries = append(u.entries, peARM64PdataEntry{
+			begin:    begin,
+			end:      begin + uint64(funcLen),
+			xdataOff: xdataOff,
+		})
+	}
+	sort.Slice(u.entries, func(i, j int) bool {
+		return u.entries[i].begin < u.entries[j].begin
+	})
+	return u
+}
+
+func (u *peARM64Unwind) FrameContextForPC(pc uint64) (*frame.FrameContext, bool) {
+	if u == nil || len(u.entries) == 0 {
+		return nil, false
+	}
+	i := sort.Search(len(u.entries), func(i int) bool {
+		return u.entries[i].begin > pc
+	}) - 1
+	if i < 0 {
+		return nil, false
+	}
+	e := u.entries[i]
+	if pc >= e.end {
+		return nil, false
+	}
+	if e.isPacked {
+		return nil, false
+	}
+	if int(e.xdataOff) >= len(u.xdata) {
+		return nil, false
+	}
+	_, codes, ok := parseARM64Xdata(u.xdata[e.xdataOff:])
+	if !ok {
+		return nil, false
+	}
+	return decodeARM64UnwindCodes(codes)
+}
 
 func parseARM64Xdata(xdata []byte) (funcLen uint32, codes []byte, ok bool) {
 	if len(xdata) < 4 {
