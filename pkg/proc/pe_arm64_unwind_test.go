@@ -125,6 +125,18 @@ func TestDecodeARM64UnwindCodes_TruncatedMultiByte(t *testing.T) {
 	}
 }
 
+func TestDecodeARM64UnwindCodes_IgnoresPaddingAfterEnd(t *testing.T) {
+	// alloc_s 32, end, then trailing padding byte must not inflate CFA.
+	codes := []byte{0x02, 0xe4, 0x02}
+	fctxt, ok := decodeARM64UnwindCodes(codes)
+	if !ok {
+		t.Fatal("expected decode success")
+	}
+	if fctxt.CFA.Offset != 32 {
+		t.Fatalf("CFA offset=%d want 32", fctxt.CFA.Offset)
+	}
+}
+
 func TestDecodeARM64UnwindCodes_UnterminatedStream(t *testing.T) {
 	cases := [][]byte{
 		{0x02},             // alloc_s without end

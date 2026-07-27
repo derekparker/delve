@@ -95,7 +95,9 @@ func arm64UnwindFinalCFAOffset(codes []byte) (int64, bool) {
 	for i < len(codes) {
 		op := codes[i]
 		switch {
-		case op == 0xe4, op == 0xe1: // end, set_fp
+		case op == 0xe4: // end
+			return cfaOff, true
+		case op == 0xe1: // set_fp
 			i++
 		case op&0xe0 == 0x00: // alloc_s
 			cfaOff += int64(op&0x1f) * 16
