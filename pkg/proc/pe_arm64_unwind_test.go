@@ -161,7 +161,7 @@ func TestPEARM64Unwind_SkipsPackedPdataEntry(t *testing.T) {
 	binary.LittleEndian.PutUint32(pdata[0:], 0x1000)
 	// Flag=1 (packed): old bit-31 parsing treats xdata RVA as 1 and would index this entry.
 	binary.LittleEndian.PutUint32(pdata[4:], 1)
-	u := buildPEARM64Unwind(pdata, xdata, imageBase)
+	u := buildPEARM64Unwind(pdata, xdata, imageBase, 0)
 	if u == nil {
 		t.Fatal("nil unwind")
 	}
@@ -181,7 +181,7 @@ func TestPEARM64Unwind_FrameContextForPC(t *testing.T) {
 	pdata := make([]byte, 8)
 	binary.LittleEndian.PutUint32(pdata[0:], 0x1000)
 	binary.LittleEndian.PutUint32(pdata[4:], 0) // flag 0, xdata RVA 0
-	u := buildPEARM64Unwind(pdata, xdata, imageBase)
+	u := buildPEARM64Unwind(pdata, xdata, imageBase, 0)
 	if u == nil {
 		t.Fatal("nil unwind")
 	}

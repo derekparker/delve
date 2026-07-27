@@ -1077,6 +1077,11 @@ type Image struct {
 
 	loadErrMu sync.Mutex
 	loadErr   error
+
+	// peARM64Unwind holds .pdata/.xdata based unwind information for PE
+	// images on arm64, used to unwind through non-Go (cgo) frames that
+	// lack .debug_frame.
+	peARM64Unwind *peARM64Unwind
 }
 
 func (image *Image) registerRuntimeTypeToDIE(entry *dwarf.Entry, ardr *reader.Reader) {
@@ -2054,6 +2059,10 @@ func loadBinaryInfoPE(bi *BinaryInfo, image *Image, path string, entryPoint uint
 	debugLineStrBytes, _ := godwarf.GetDebugSectionPE(peFile, "line_str")
 	image.debugLineStr = debugLineStrBytes
 
+	if bi.Arch.Name == "arm64" {
+		image.peARM64Unwind = loadPEARM64Unwind(peFile, entryPoint)
+	}
+
 	wg.Add(2)
 	go bi.parseDebugFramePE(image, peFile, debugInfoBytes, wg)
 	go bi.loadDebugInfoMaps(image, debugInfoBytes, debugLineBytes, wg, func() {
@@ -2065,6 +2074,53 @@ func loadBinaryInfoPE(bi *BinaryInfo, image *Image, path string, entryPoint uint
 		}
 	})
 	return nil
+}
+
+// loadPEARM64Unwind reads the .pdata and .xdata sections of a PE arm64
+// image and builds the pdata/xdata based unwind table used to unwind
+// through frames that don't have .debug_frame (e.g. cgo/C frames). It
+// returns nil if either section is missing.
+func loadPEARM64Unwind(peFile *pe.File, imageBase uint64) *peARM64Unwind {
+	pdataSec := peFile.Section(".pdata")
+	xdataSec := peFile.Section(".xdata")
+	if pdataSec == nil || xdataSec == nil {
+		return nil
+	}
+	pdata, err := peSectionData(pdataSec)
+	if err != nil {
+		return nil
+	}
+	xdata, err := peSectionData(xdataSec)
+	if err != nil {
+		return nil
+	}
+	return buildPEARM64Unwind(pdata, xdata, imageBase, xdataSec.VirtualAddress)
+}
+
+// peSectionData returns the contents of a PE section, truncated to
+// VirtualSize when that is smaller than the raw section size (mirrors
+// godwarf's peSectionData helper).
+func peSectionData(sec *pe.Section) ([]byte, error) {
+	b, err := sec.Data()
+	if err != nil {
+		return nil, err
+	}
+	if 0 < sec.VirtualSize && sec.VirtualSize < sec.Size {
+		b = b[:sec.VirtualSize]
+	}
+	return b, nil
+}
+
+// peARM64FrameContext returns unwind information for pc derived from the
+// PE .pdata/.xdata sections of the image containing pc. This is used as a
+// fallback for arm64 windows frames that don't have DWARF .debug_frame
+// entries (e.g. cgo/C frames).
+func (bi *BinaryInfo) peARM64FrameContext(pc uint64) (*frame.FrameContext, bool) {
+	image := bi.PCToImage(pc)
+	if image == nil || image.peARM64Unwind == nil {
+		return nil, false
+	}
+	return image.peARM64Unwind.FrameContextForPC(pc)
 }
 
 func (bi *BinaryInfo) setGStructOffsetPE(entryPoint uint64, peFile *pe.File) {

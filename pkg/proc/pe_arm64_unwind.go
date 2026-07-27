@@ -21,12 +21,11 @@ type peARM64Unwind struct {
 	imageBase uint64
 }
 
-func buildPEARM64Unwind(pdata, xdata []byte, imageBase uint64) *peARM64Unwind {
+func buildPEARM64Unwind(pdata, xdata []byte, imageBase uint64, xdataSectionRVA uint32) *peARM64Unwind {
 	u := &peARM64Unwind{
 		xdata:     xdata,
 		imageBase: imageBase,
 	}
-	const xdataSectionRVA = uint32(0)
 	for off := 0; off+8 <= len(pdata); off += 8 {
 		beginRVA := binary.LittleEndian.Uint32(pdata[off:])
 		info := binary.LittleEndian.Uint32(pdata[off+4:])
