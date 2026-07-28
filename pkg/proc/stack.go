@@ -708,7 +708,11 @@ func (it *stackIterator) advanceRegsDWARF() (callFrameRegs op.DwarfRegisters, re
 	fde, err := it.bi.frameEntries.FDEForPC(it.pc)
 	var framectx *frame.FrameContext
 	if _, nofde := err.(*frame.ErrNoFDEForPC); nofde {
-		framectx = it.bi.Arch.fixFrameUnwindContext(nil, it.pc, it.bi)
+		if fctxt, ok := it.bi.peARM64FrameContext(it.pc); ok {
+			framectx = it.bi.Arch.fixFrameUnwindContext(fctxt, it.pc, it.bi)
+		} else {
+			framectx = it.bi.Arch.fixFrameUnwindContext(nil, it.pc, it.bi)
+		}
 	} else {
 		fctxt, err := fde.EstablishFrame(it.pc)
 		if err != nil {
