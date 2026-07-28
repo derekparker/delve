@@ -144,7 +144,7 @@ const arm64cgocallSPOffsetSaveSlot = 0x8
 const prevG0schedSPOffsetSaveSlot = 0x10
 
 func arm64SwitchStack(it *stackIterator, callFrameRegs *op.DwarfRegisters) bool {
-	linux := runtime.GOOS == "linux"
+	switchStackOS := runtime.GOOS == "linux" || runtime.GOOS == "windows"
 	if it.frame.Current.Fn == nil {
 		if it.systemstack && it.g != nil && it.top {
 			if err := it.switchToGoroutineStack(); err != nil {
@@ -157,7 +157,7 @@ func arm64SwitchStack(it *stackIterator, callFrameRegs *op.DwarfRegisters) bool 
 	}
 	switch it.frame.Current.Fn.Name {
 	case "runtime.cgocallback_gofunc", "runtime.cgocallback":
-		if linux {
+		if switchStackOS {
 			// For a detailed description of how this works read the long comment at
 			// the start of $GOROOT/src/runtime/cgocall.go and the source code of
 			// runtime.cgocallback_gofunc in $GOROOT/src/runtime/asm_arm64.s
@@ -190,7 +190,7 @@ func arm64SwitchStack(it *stackIterator, callFrameRegs *op.DwarfRegisters) bool 
 		}
 
 	case "runtime.asmcgocall":
-		if linux {
+		if switchStackOS {
 			if it.top || !it.systemstack {
 				return false
 			}
@@ -263,7 +263,7 @@ func arm64SwitchStack(it *stackIterator, callFrameRegs *op.DwarfRegisters) bool 
 		it.pc = newlr
 		return true
 	case "runtime.mstart":
-		if linux {
+		if runtime.GOOS == "linux" {
 			// Calls to runtime.systemstack will switch to the systemstack then:
 			// 1. alter the goroutine stack so that it looks like systemstack_switch
 			//    was called
