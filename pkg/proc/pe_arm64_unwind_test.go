@@ -194,6 +194,60 @@ func TestPEARM64Unwind_FrameContextForPC(t *testing.T) {
 	}
 }
 
+func TestPEARM64Unwind_FrameContextForPC_NonZeroXdataSectionRVA(t *testing.T) {
+	imageBase := uint64(0x100000000)
+	const xdataSectionRVA = uint32(0x2000)
+	clangRecord := []byte{0x09, 0x00, 0x20, 0x08, 0xd2, 0xc2, 0x02, 0xe4}
+
+	t.Run("record at section base", func(t *testing.T) {
+		pdata := make([]byte, 8)
+		binary.LittleEndian.PutUint32(pdata[0:], 0x1000)
+		binary.LittleEndian.PutUint32(pdata[4:], xdataSectionRVA) // xdata RVA 0x2000, flag 0
+		u := buildPEARM64Unwind(pdata, clangRecord, imageBase, xdataSectionRVA)
+		if u == nil {
+			t.Fatal("nil unwind")
+		}
+		if len(u.entries) != 1 {
+			t.Fatalf("entries=%d want 1", len(u.entries))
+		}
+		if u.entries[0].xdataOff != 0 {
+			t.Fatalf("xdataOff=%d want 0", u.entries[0].xdataOff)
+		}
+		fctxt, ok := u.FrameContextForPC(imageBase + 0x1000 + 8)
+		if !ok || fctxt == nil {
+			t.Fatal("expected hit")
+		}
+		if fctxt.CFA.Offset != 32 {
+			t.Fatalf("CFA offset=%d want 32", fctxt.CFA.Offset)
+		}
+	})
+
+	t.Run("record after padding in section buffer", func(t *testing.T) {
+		xdata := make([]byte, 8+len(clangRecord))
+		copy(xdata[8:], clangRecord)
+		pdata := make([]byte, 8)
+		binary.LittleEndian.PutUint32(pdata[0:], 0x1000)
+		binary.LittleEndian.PutUint32(pdata[4:], xdataSectionRVA+8) // xdata RVA 0x2008, flag 0
+		u := buildPEARM64Unwind(pdata, xdata, imageBase, xdataSectionRVA)
+		if u == nil {
+			t.Fatal("nil unwind")
+		}
+		if len(u.entries) != 1 {
+			t.Fatalf("entries=%d want 1", len(u.entries))
+		}
+		if u.entries[0].xdataOff != 8 {
+			t.Fatalf("xdataOff=%d want 8", u.entries[0].xdataOff)
+		}
+		fctxt, ok := u.FrameContextForPC(imageBase + 0x1000 + 8)
+		if !ok || fctxt == nil {
+			t.Fatal("expected hit")
+		}
+		if fctxt.CFA.Offset != 32 {
+			t.Fatalf("CFA offset=%d want 32", fctxt.CFA.Offset)
+		}
+	})
+}
+
 func TestDecodeARM64UnwindCodes_UnterminatedStream(t *testing.T) {
 	cases := [][]byte{
 		{0x02},             // alloc_s without end
