@@ -53,11 +53,33 @@ func TestDecodeARM64UnwindCodes_SaveFplrXSetFp(t *testing.T) {
 	if fctxt.CFA.Offset != 16 {
 		t.Fatalf("CFA offset=%d want 16", fctxt.CFA.Offset)
 	}
-	if fctxt.Regs[regnum.ARM64_LR].Rule != frame.RuleOffset {
-		t.Fatal("expected LR offset rule")
+	bp := fctxt.Regs[regnum.ARM64_BP]
+	if bp.Rule != frame.RuleOffset || bp.Offset != -16 {
+		t.Fatalf("BP rule=%+v want Offset -16", bp)
 	}
-	if fctxt.Regs[regnum.ARM64_BP].Rule != frame.RuleOffset {
-		t.Fatal("expected BP offset rule")
+	lr := fctxt.Regs[regnum.ARM64_LR]
+	if lr.Rule != frame.RuleOffset || lr.Offset != -8 {
+		t.Fatalf("LR rule=%+v want Offset -8", lr)
+	}
+}
+
+func TestDecodeARM64UnwindCodes_AllocSSetFpSaveFplrX(t *testing.T) {
+	// alloc_s(32), set_fp, save_fplr_x(Z=1), end — pre-index save after prior alloc
+	codes := []byte{0x02, 0xe1, 0x81, 0xe4}
+	fctxt, ok := decodeARM64UnwindCodes(codes)
+	if !ok {
+		t.Fatal("expected decode success")
+	}
+	if fctxt.CFA.Offset != 48 {
+		t.Fatalf("CFA offset=%d want 48", fctxt.CFA.Offset)
+	}
+	bp := fctxt.Regs[regnum.ARM64_BP]
+	if bp.Rule != frame.RuleOffset || bp.Offset != -16 {
+		t.Fatalf("BP rule=%+v want Offset -16", bp)
+	}
+	lr := fctxt.Regs[regnum.ARM64_LR]
+	if lr.Rule != frame.RuleOffset || lr.Offset != -8 {
+		t.Fatalf("LR rule=%+v want Offset -8", lr)
 	}
 }
 

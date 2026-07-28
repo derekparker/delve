@@ -11,8 +11,6 @@ import (
 type peARM64PdataEntry struct {
 	begin, end uint64
 	xdataOff   uint32
-	packed     uint32
-	isPacked   bool
 }
 
 type peARM64Unwind struct {
@@ -35,7 +33,7 @@ func buildPEARM64Unwind(pdata, xdata []byte, imageBase uint64, xdataSectionRVA u
 		}
 		xdataRVA := info &^ 0x3
 		xdataOff := xdataRVA - xdataSectionRVA
-		if int(xdataOff) >= len(xdata) {
+		if xdataOff >= uint32(len(xdata)) {
 			continue
 		}
 		funcLen, _, ok := parseARM64Xdata(xdata[xdataOff:])
@@ -69,10 +67,7 @@ func (u *peARM64Unwind) FrameContextForPC(pc uint64) (*frame.FrameContext, bool)
 	if pc >= e.end {
 		return nil, false
 	}
-	if e.isPacked {
-		return nil, false
-	}
-	if int(e.xdataOff) >= len(u.xdata) {
+	if e.xdataOff >= uint32(len(u.xdata)) {
 		return nil, false
 	}
 	_, codes, ok := parseARM64Xdata(u.xdata[e.xdataOff:])
@@ -143,9 +138,10 @@ func decodeARM64UnwindCodes(codes []byte) (*frame.FrameContext, bool) {
 			i++
 		case op&0xc0 == 0x80: // save_fplr_x: 10zzzzzz — pre-index
 			z := int64(op&0x3f) + 1
+			offFromCFA := -(finalCFAOff - cfaOff)
+			regs[regnum.ARM64_BP] = frame.DWRule{Rule: frame.RuleOffset, Offset: offFromCFA}
+			regs[regnum.ARM64_LR] = frame.DWRule{Rule: frame.RuleOffset, Offset: offFromCFA + 8}
 			cfaOff += z * 8
-			regs[regnum.ARM64_BP] = frame.DWRule{Rule: frame.RuleOffset, Offset: -cfaOff}
-			regs[regnum.ARM64_LR] = frame.DWRule{Rule: frame.RuleOffset, Offset: -cfaOff + 8}
 			i++
 		case op == 0xe1: // set_fp
 			i++
@@ -177,9 +173,10 @@ func decodeARM64UnwindCodes(codes []byte) (*frame.FrameContext, bool) {
 			}
 			x := ((op & 0x01) << 3) | (codes[i+1] >> 5)
 			z := int64(codes[i+1]&0x1f) + 1
-			cfaOff += z * 8
 			reg := regnum.ARM64_X0 + 19 + uint64(x)
-			regs[reg] = frame.DWRule{Rule: frame.RuleOffset, Offset: -cfaOff}
+			offFromCFA := -(finalCFAOff - cfaOff)
+			regs[reg] = frame.DWRule{Rule: frame.RuleOffset, Offset: offFromCFA}
+			cfaOff += z * 8
 			i += 2
 		default:
 			return nil, false
