@@ -3,6 +3,39 @@
 All notable changes to this project will be documented in this file.
 This project adheres to Semantic Versioning.
 
+## [1.27.2] 2026-09-08
+
+### Added
+
+- `jump` command and `SetExecutionPoint` API to set the next statement to be executed (#4434, @larrasket)
+- `types` command in DAP, mirroring the command-line REPL (#4439, @larrasket)
+- Emit download events while calling `DownloadLibraryDebugInfo`, and call it automatically after an attach (#4438, @aarzilli)
+
+### Fixed
+
+- Fix infinite loop in `mapIteratorSwiss.next` when the table length overflows (#4433, @aarzilli)
+- Do not call debuginfod-find right after attach, where the pause can not be reported or aborted (#4431, @aarzilli)
+- Poll wait4 on FreeBSD to avoid a lost wakeup that hung the debugger (#4435, @neilpang)
+- Advance through FreeBSD process snapshots instead of rescanning a cached entry (#4421, @typesanitizer)
+- Honor the frame and goroutine of the SetVariable scope in DAP (#4419, @larrasket)
+- Close resumeNotify early with the halt command so asynchronous requests can still be served (#4425, @aarzilli)
+- Defer pointer cast to the syscall invoking function on Windows (#4414, @typesanitizer)
+- Do not nest memCache objects (#4418, @aarzilli)
+- Format versioned development builds correctly (#4445, @cuishuang)
+- Keep `-C` first for test builds (#4444, @cuishuang)
+
+### Changed
+
+- Update `github.com/cilium/ebpf` from 0.11.0 to 0.22.0 (#4422, @dependabot)
+- Export `LoadFullValue` as a return-by-value helper and deduplicate matching `LoadConfig` literals (#4411, @derekparker)
+- Update Windows syscall generator (#4404, @typesanitizer)
+- Run the FreeBSD tests on GitHub Actions, replacing the shut down Cirrus CI (#4432, @neilpang)
+- Add scripts to set up and run the expression evaluator fuzzer, and run it in CI (#4412, @derekparker)
+- Upgrade GitHub Actions and pin GoReleaser (#4427, @derekparker, @FranciscoPombal)
+- Pin GitHub Actions to commit SHAs, declare workflow permissions, and add a plumber workflow security check (#4405, #4406, @Totara-thib)
+- Make interrupted draft uploads rerunnable and fail early when a release is already published (#4408, #4409, @FranciscoPombal)
+- Miscellaneous improvements to tests and build configuration (#4417, #4424, #4426, #4428, #4441, @aarzilli, @derekparker, @loongson-zn)
+
 ## [1.27.1] 2026-07-31
 
 ### Added
