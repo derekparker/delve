@@ -2,15 +2,12 @@ package proc
 
 import (
 	"encoding/binary"
-	"regexp"
 
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/dwarf/regnum"
 
 	"golang.org/x/arch/arm64/arm64asm"
 )
-
-var arm64LinkerTrampolineName = regexp.MustCompile(`[+-][0-9a-f]+-tramp[0-9]+$`)
 
 func arm64AsmDecode(asmInst *AsmInstruction, mem []byte, regs *op.DwarfRegisters, memrw MemoryReadWriter, bi *BinaryInfo) error {
 	asmInst.Size = 4
@@ -79,7 +76,7 @@ func resolveCallArgARM64(inst *arm64asm.Inst, instAddr uint64, currentGoroutine 
 // arm64LinkerTrampolineTarget recognizes the instruction sequences emitted by
 // cmd/link/internal/arm64.gentramp and gentrampgot.
 func arm64LinkerTrampolineTarget(name string, pc uint64, instructions []AsmInstruction) (addr uint64, indirect, ok bool) {
-	if !arm64LinkerTrampolineName.MatchString(name) {
+	if !linkerTrampolineName.MatchString(name) {
 		return 0, false, false
 	}
 

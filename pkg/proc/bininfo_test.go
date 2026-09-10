@@ -7,7 +7,7 @@ import (
 	"github.com/go-delve/delve/pkg/internal/gosym"
 )
 
-func TestAddPCLNFunctionsMergesUniqueFunctions(t *testing.T) {
+func TestAddPCLNTrampolineFunctionsMergesUniqueFunctions(t *testing.T) {
 	tests := []struct {
 		name           string
 		dwarfFunctions []Function
@@ -17,14 +17,14 @@ func TestAddPCLNFunctionsMergesUniqueFunctions(t *testing.T) {
 		{
 			name:           "same entry different name",
 			dwarfFunctions: []Function{{Name: "main.main", Entry: 0x1000, End: 0x1020}},
-			pclnFunction:   pclnFunction("main.main.abi0", 0x1000, 0x1020),
+			pclnFunction:   pclnFunction("main.call+0-tramp0", 0x1000, 0x1020),
 			want:           []Function{{Name: "main.main", Entry: 0x1000, End: 0x1020}},
 		},
 		{
 			name:           "same name different entry",
-			dwarfFunctions: []Function{{Name: "main.main", Entry: 0x1000, End: 0x1020}},
-			pclnFunction:   pclnFunction("main.main", 0x1010, 0x1020),
-			want:           []Function{{Name: "main.main", Entry: 0x1000, End: 0x1020}},
+			dwarfFunctions: []Function{{Name: "main.call+0-tramp0", Entry: 0x1000, End: 0x1020}},
+			pclnFunction:   pclnFunction("main.call+0-tramp0", 0x1020, 0x1040),
+			want:           []Function{{Name: "main.call+0-tramp0", Entry: 0x1000, End: 0x1020}},
 		},
 		{
 			name:           "new function",
@@ -36,9 +36,15 @@ func TestAddPCLNFunctionsMergesUniqueFunctions(t *testing.T) {
 			},
 		},
 		{
+			name:           "non-trampoline pclntab-only function",
+			dwarfFunctions: []Function{{Name: "main.main", Entry: 0x1000, End: 0x1020}},
+			pclnFunction:   pclnFunction("runtime.asmcgocall", 0x1020, 0x1040),
+			want:           []Function{{Name: "main.main", Entry: 0x1000, End: 0x1020}},
+		},
+		{
 			name:           "new function overlapping next DWARF range",
 			dwarfFunctions: []Function{{Name: "__x86.get_pc_thunk.cx", Entry: 0x1010, End: 0x1014}},
-			pclnFunction:   pclnFunction("runtime.main", 0x1000, 0x1020),
+			pclnFunction:   pclnFunction("runtime.main+0-tramp0", 0x1000, 0x1020),
 			want:           []Function{{Name: "__x86.get_pc_thunk.cx", Entry: 0x1010, End: 0x1014}},
 		},
 		{
@@ -47,7 +53,7 @@ func TestAddPCLNFunctionsMergesUniqueFunctions(t *testing.T) {
 				{Name: "runtime.main", Entry: 0x1000, End: 0x1100},
 				{Name: "__x86.get_pc_thunk.cx", Entry: 0x1010, End: 0x1014},
 			},
-			pclnFunction: pclnFunction("runtime.main.func2", 0x1020, 0x1040),
+			pclnFunction: pclnFunction("runtime.main.func2+0-tramp0", 0x1020, 0x1040),
 			want: []Function{
 				{Name: "runtime.main", Entry: 0x1000, End: 0x1100},
 				{Name: "__x86.get_pc_thunk.cx", Entry: 0x1010, End: 0x1014},
@@ -63,7 +69,7 @@ func TestAddPCLNFunctionsMergesUniqueFunctions(t *testing.T) {
 			}
 			bi := &BinaryInfo{Functions: test.dwarfFunctions}
 
-			bi.addPCLNFunctions(image)
+			bi.addPCLNTrampolineFunctions(image)
 
 			for i := range bi.Functions {
 				bi.Functions[i].cu = nil

@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -47,6 +48,8 @@ const (
 	dwarfAttrAddrBase  = 0x73 // debug/dwarf.AttrAddrBase in Go 1.14, defined here for compatibility with Go < 1.14
 	dwarfTreeCacheSize = 512  // size of the dwarfTree cache of each image
 )
+
+var linkerTrampolineName = regexp.MustCompile(`[+-][0-9a-f]+-tramp[0-9]+$`)
 
 // BinaryInfo holds information on the binaries being executed (this
 // includes both the executable and also any loaded libraries).
@@ -2554,12 +2557,12 @@ func loadBinaryInfoGoRuntimeCommon(bi *BinaryInfo, image *Image, cu *compileUnit
 	return nil
 }
 
-// addPCLNFunctions adds functions emitted by the Go linker that do not have a
-// corresponding DWARF entry. Function names are compared within one image;
+// addPCLNTrampolineFunctions adds linker-generated trampolines that do not have
+// a corresponding DWARF entry. Function names are compared within one image;
 // entry PCs and ranges prevent aliases or externally inserted functions from
 // creating overlapping entries. DWARF remains authoritative when both sources
 // describe the same function.
-func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
+func (bi *BinaryInfo) addPCLNTrampolineFunctions(image *Image) {
 	if image.symTable == nil {
 		return
 	}
@@ -2578,6 +2581,9 @@ func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
 	var previousDwarfEnd uint64
 	for i := range image.symTable.Funcs {
 		f := &image.symTable.Funcs[i]
+		if !linkerTrampolineName.MatchString(f.Name) {
+			continue
+		}
 		if _, ok := dwarfNames[f.Name]; ok {
 			continue
 		}
@@ -2852,7 +2858,7 @@ func (bi *BinaryInfo) loadDebugInfoMaps(image *Image, debugInfoBytes, debugLineB
 
 	slices.SortFunc(image.compileUnits, func(a, b *compileUnit) int { return cmp.Compare(a.offset, b.offset) })
 	slices.SortFunc(bi.Functions, func(a, b Function) int { return cmp.Compare(a.Entry, b.Entry) })
-	bi.addPCLNFunctions(image)
+	bi.addPCLNTrampolineFunctions(image)
 	slices.SortFunc(bi.packageVars, func(a, b packageVar) int { return cmp.Compare(a.addr, b.addr) })
 
 	bi.lookupFunc = nil
