@@ -2575,6 +2575,7 @@ func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
 	addPCLN := make([]bool, len(image.symTable.Funcs))
 	missing := 0
 	dwarfIndex := 0
+	var previousDwarfEnd uint64
 	for i := range image.symTable.Funcs {
 		f := &image.symTable.Funcs[i]
 		if _, ok := dwarfNames[f.Name]; ok {
@@ -2583,9 +2584,10 @@ func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
 		entry := f.Entry + staticBase
 		end := f.End + staticBase
 		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
+			previousDwarfEnd = max(previousDwarfEnd, bi.Functions[dwarfIndex].End)
 			dwarfIndex++
 		}
-		overlapsPrevious := dwarfIndex > 0 && bi.Functions[dwarfIndex-1].End > entry
+		overlapsPrevious := previousDwarfEnd > entry
 		overlapsNext := dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < end
 		if overlapsPrevious || overlapsNext {
 			continue
