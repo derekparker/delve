@@ -29,11 +29,17 @@ func TestAddPCLNFunctionsMergesUniqueFunctions(t *testing.T) {
 		{
 			name:          "new function",
 			dwarfFunction: Function{Name: "main.main", Entry: 0x1000, End: 0x1020},
-			pclnFunction:  pclnFunction("main.call+0-tramp0", 0x1010, 0x1020),
+			pclnFunction:  pclnFunction("main.call+0-tramp0", 0x1020, 0x1040),
 			want: []Function{
 				{Name: "main.main", Entry: 0x1000, End: 0x1020},
-				{Name: "main.call+0-tramp0", Entry: 0x1010, End: 0x1020},
+				{Name: "main.call+0-tramp0", Entry: 0x1020, End: 0x1040},
 			},
+		},
+		{
+			name:          "new function overlapping DWARF range",
+			dwarfFunction: Function{Name: "__x86.get_pc_thunk.cx", Entry: 0x1010, End: 0x1014},
+			pclnFunction:  pclnFunction("runtime.main", 0x1000, 0x1020),
+			want:          []Function{{Name: "__x86.get_pc_thunk.cx", Entry: 0x1010, End: 0x1014}},
 		},
 	}
 

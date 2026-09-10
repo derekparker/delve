@@ -1722,6 +1722,7 @@ func TestStepIntoFunction(t *testing.T) {
 
 func TestStepIntoFunctionThroughARM64LinkerTrampoline(t *testing.T) {
 	skipUnlessOn(t, "linker trampoline instruction sequence is architecture-specific", "arm64")
+	skipOn(t, "PE pclntab loading is not supported", "windows")
 	withTestProcessArgs("linkertrampoline/", t, ".", nil, protest.LinkDebugTrampolines, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		assertNoError(grp.Continue(), t, "Continue() returned an error")
 

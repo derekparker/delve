@@ -2556,8 +2556,9 @@ func loadBinaryInfoGoRuntimeCommon(bi *BinaryInfo, image *Image, cu *compileUnit
 
 // addPCLNFunctions adds functions emitted by the Go linker that do not have a
 // corresponding DWARF entry. Function names are compared within one image;
-// entry PCs also prevent aliases from creating overlapping functions. DWARF
-// remains authoritative when both sources describe the same function.
+// entry PCs and ranges prevent aliases or externally inserted functions from
+// creating overlapping entries. DWARF remains authoritative when both sources
+// describe the same function.
 func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
 	if image.symTable == nil {
 		return
@@ -2571,29 +2572,36 @@ func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
 			dwarfNames[fn.Name] = struct{}{}
 		}
 	}
+	addPCLN := make([]bool, len(image.symTable.Funcs))
 	missing := 0
 	dwarfIndex := 0
 	for i := range image.symTable.Funcs {
-		if _, ok := dwarfNames[image.symTable.Funcs[i].Name]; ok {
+		f := &image.symTable.Funcs[i]
+		if _, ok := dwarfNames[f.Name]; ok {
 			continue
 		}
-		entry := image.symTable.Funcs[i].Entry + staticBase
+		entry := f.Entry + staticBase
+		end := f.End + staticBase
 		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
 			dwarfIndex++
 		}
-		if dwarfIndex == len(bi.Functions) || bi.Functions[dwarfIndex].Entry != entry {
-			missing++
+		overlapsPrevious := dwarfIndex > 0 && bi.Functions[dwarfIndex-1].End > entry
+		overlapsNext := dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < end
+		if overlapsPrevious || overlapsNext {
+			continue
 		}
+		addPCLN[i] = true
+		missing++
 	}
 
 	cu := &compileUnit{isgo: true, image: image}
 	merged := make([]Function, 0, len(bi.Functions)+missing)
 	dwarfIndex = 0
 	for i := range image.symTable.Funcs {
-		f := &image.symTable.Funcs[i]
-		if _, ok := dwarfNames[f.Name]; ok {
+		if !addPCLN[i] {
 			continue
 		}
+		f := &image.symTable.Funcs[i]
 		entry := f.Entry + staticBase
 		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
 			merged = append(merged, bi.Functions[dwarfIndex])
