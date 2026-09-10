@@ -2555,17 +2555,28 @@ func loadBinaryInfoGoRuntimeCommon(bi *BinaryInfo, image *Image, cu *compileUnit
 }
 
 // addPCLNFunctions adds functions emitted by the Go linker that do not have a
-// corresponding DWARF entry. DWARF remains authoritative when both sources
-// describe a function at the same entry PC.
+// corresponding DWARF entry. Function names are compared within one image;
+// entry PCs also prevent aliases from creating overlapping functions. DWARF
+// remains authoritative when both sources describe the same function.
 func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
 	if image.symTable == nil {
 		return
 	}
 
 	staticBase := image.StaticBase
+	dwarfNames := make(map[string]struct{})
+	for i := range bi.Functions {
+		fn := &bi.Functions[i]
+		if fn.cu != nil && fn.cu.image == image {
+			dwarfNames[fn.Name] = struct{}{}
+		}
+	}
 	missing := 0
 	dwarfIndex := 0
 	for i := range image.symTable.Funcs {
+		if _, ok := dwarfNames[image.symTable.Funcs[i].Name]; ok {
+			continue
+		}
 		entry := image.symTable.Funcs[i].Entry + staticBase
 		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
 			dwarfIndex++
@@ -2580,6 +2591,9 @@ func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
 	dwarfIndex = 0
 	for i := range image.symTable.Funcs {
 		f := &image.symTable.Funcs[i]
+		if _, ok := dwarfNames[f.Name]; ok {
+			continue
+		}
 		entry := f.Entry + staticBase
 		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
 			merged = append(merged, bi.Functions[dwarfIndex])
