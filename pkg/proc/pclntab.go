@@ -29,7 +29,12 @@ func readPcLnTableElf(exe *elf.File, path string) (*gosym.Table, uint64, error) 
 
 	addr := exe.Section(".text").Addr
 	if symbols, err := exe.Symbols(); err == nil {
-		addr = elfTextBase(symbols, addr)
+		for i := range symbols {
+			if symbols[i].Name == "runtime.text" {
+				addr = symbols[i].Value
+				break
+			}
+		}
 	}
 	lineTable := gosym.NewLineTable(tableData, addr)
 	symTable, err := gosym.NewTable([]byte{}, lineTable)
@@ -37,15 +42,6 @@ func readPcLnTableElf(exe *elf.File, path string) (*gosym.Table, uint64, error) 
 		return nil, 0, fmt.Errorf("could not create symbol table from  %s ", path)
 	}
 	return symTable, section.Addr, nil
-}
-
-func elfTextBase(symbols []elf.Symbol, fallback uint64) uint64 {
-	for i := range symbols {
-		if symbols[i].Name == "runtime.text" {
-			return symbols[i].Value
-		}
-	}
-	return fallback
 }
 
 func readPcLnTableMacho(exe *macho.File, path string) (*gosym.Table, uint64, error) {
