@@ -1,11 +1,16 @@
 package proc
 
 import (
+	"encoding/binary"
+	"regexp"
+
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/dwarf/regnum"
 
 	"golang.org/x/arch/arm64/arm64asm"
 )
+
+var arm64LinkerTrampolineName = regexp.MustCompile(`[+-][0-9a-f]+-tramp[0-9]+$`)
 
 func arm64AsmDecode(asmInst *AsmInstruction, mem []byte, regs *op.DwarfRegisters, memrw MemoryReadWriter, bi *BinaryInfo) error {
 	asmInst.Size = 4
@@ -69,6 +74,105 @@ func resolveCallArgARM64(inst *arm64asm.Inst, instAddr uint64, currentGoroutine 
 		return &Location{PC: pc}
 	}
 	return &Location{PC: pc, File: file, Line: line, Fn: fn}
+}
+
+// arm64LinkerTrampolineTarget recognizes the instruction sequences emitted by
+// cmd/link/internal/arm64.gentramp and gentrampgot.
+func arm64LinkerTrampolineTarget(name string, pc uint64, instructions []AsmInstruction) (addr uint64, indirect, ok bool) {
+	if !arm64LinkerTrampolineName.MatchString(name) {
+		return 0, false, false
+	}
+
+	if len(instructions) != 3 {
+		return 0, false, false
+	}
+	adrp, adrpok := instructions[0].Inst.(*arm64ArchInst)
+	load, loadok := instructions[1].Inst.(*arm64ArchInst)
+	br, brok := instructions[2].Inst.(*arm64ArchInst)
+	if !adrpok || !loadok || !brok || adrp == nil || load == nil || br == nil {
+		return 0, false, false
+	}
+
+	adrpdst, adrpDstOK := adrp.Args[0].(arm64asm.Reg)
+	adrpoff, adrpOffOK := adrp.Args[1].(arm64asm.PCRel)
+	brreg, brRegOK := br.Args[0].(arm64asm.Reg)
+	if adrp.Op != arm64asm.ADRP || !adrpDstOK || adrpdst != arm64asm.X16 || !adrpOffOK ||
+		br.Op != arm64asm.BR || !brRegOK || brreg != arm64asm.X16 {
+		return 0, false, false
+	}
+
+	page := pc &^ 0xfff
+	if adrpoff < 0 {
+		offset := uint64(-adrpoff)
+		if page < offset {
+			return 0, false, false
+		}
+		page -= offset
+	} else {
+		offset := uint64(adrpoff)
+		if page > ^uint64(0)-offset {
+			return 0, false, false
+		}
+		page += offset
+	}
+
+	var offset uint64
+	switch load.Op {
+	case arm64asm.ADD:
+		dst, dstok := load.Args[0].(arm64asm.RegSP)
+		src, srcok := load.Args[1].(arm64asm.RegSP)
+		_, immok := load.Args[2].(arm64asm.ImmShift)
+		if !dstok || arm64asm.Reg(dst) != arm64asm.X16 ||
+			!srcok || arm64asm.Reg(src) != arm64asm.X16 || !immok {
+			return 0, false, false
+		}
+		// ImmShift does not export its value, so extract only the immediate
+		// after the decoder has established the opcode and operand types.
+		offset = uint64(load.Enc>>10&0xfff) << (12 * ((load.Enc >> 22) & 0x1))
+	case arm64asm.LDR:
+		dst, dstok := load.Args[0].(arm64asm.Reg)
+		mem, memok := load.Args[1].(arm64asm.MemImmediate)
+		if !dstok || dst != arm64asm.X16 || !memok ||
+			arm64asm.Reg(mem.Base) != arm64asm.X16 || mem.Mode != arm64asm.AddrOffset {
+			return 0, false, false
+		}
+		// MemImmediate does not export its offset. X16 establishes that this is
+		// the 64-bit form, whose encoded immediate is scaled by eight.
+		offset = uint64(load.Enc>>10&0xfff) << 3
+		indirect = true
+	default:
+		return 0, false, false
+	}
+	if page > ^uint64(0)-offset {
+		return 0, false, false
+	}
+	return page + offset, indirect, true
+}
+
+func resolveARM64LinkerTrampoline(p Process, fn *Function, pc uint64) (uint64, bool) {
+	name := ""
+	if fn != nil {
+		name = fn.Name
+	} else if sym := p.BinInfo().SymNames[pc]; sym != nil {
+		name = sym.Name
+	}
+	if fn != nil && fn.End-fn.Entry < 12 {
+		return 0, false
+	}
+	text, err := Disassemble(p.Memory(), nil, p.Breakpoints(), p.BinInfo(), pc, pc+12)
+	if err != nil || len(text) != 3 {
+		return 0, false
+	}
+	addr, indirect, ok := arm64LinkerTrampolineTarget(name, pc, text)
+	if !ok || !indirect {
+		return addr, ok
+	}
+
+	target := make([]byte, p.BinInfo().Arch.PtrSize())
+	if _, err := p.Memory().ReadMemory(target, addr); err != nil {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint64(target), true
 }
 
 // Possible stacksplit prologues are inserted by stacksplit in

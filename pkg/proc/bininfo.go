@@ -59,7 +59,8 @@ type BinaryInfo struct {
 
 	DebugInfoDirectories []string
 
-	// Functions is a list of all DW_TAG_subprogram entries in debug_info, sorted by entry point
+	// Functions contains functions described by DWARF or pclntab, sorted by
+	// entry point. DWARF is preferred when both sources describe the same entry.
 	Functions []Function
 	// Sources is a list of all source files found in debug_line.
 	Sources []string
@@ -1781,6 +1782,7 @@ func loadBinaryInfoElf(bi *BinaryInfo, image *Image, path string, addr uint64, w
 			return err
 		}
 	}
+	loadBinaryInfoGoRuntimeSymTableElf(image, path, elfFile)
 
 	debugInfoBytes, err = godwarf.GetDebugSectionElf(dwarfFile, "info")
 	if err != nil {
@@ -2184,6 +2186,7 @@ func loadBinaryInfoMacho(bi *BinaryInfo, image *Image, path string, entryPoint u
 		}
 		return nil
 	}
+	loadBinaryInfoGoRuntimeSymTableMacho(image, path, exe)
 	debugInfoBytes, err := godwarf.GetDebugSectionMacho(exe, "info")
 	if err != nil {
 		return err
@@ -2369,6 +2372,36 @@ func macOSShortSectionNamesWorkaround(exe *macho.File) {
 
 // GO RUNTIME INFO ////////////////////////////////////////////////////////////
 
+// loadBinaryInfoGoRuntimeSymTableElf loads pclntab when it is present. Errors
+// are ignored because this is also called for binaries that were not produced
+// by the Go toolchain.
+func loadBinaryInfoGoRuntimeSymTableElf(image *Image, path string, elfFile *elf.File) {
+	defer func() {
+		if recover() != nil {
+			logflags.Bug.Inc()
+		}
+	}()
+	symTable, _, err := readPcLnTableElf(elfFile, path)
+	if err == nil {
+		image.symTable = symTable
+	}
+}
+
+// loadBinaryInfoGoRuntimeSymTableMacho loads pclntab when it is present. Errors
+// are ignored because this is also called for binaries that were not produced
+// by the Go toolchain.
+func loadBinaryInfoGoRuntimeSymTableMacho(image *Image, path string, exe *macho.File) {
+	defer func() {
+		if recover() != nil {
+			logflags.Bug.Inc()
+		}
+	}()
+	symTable, _, err := readPcLnTableMacho(exe, path)
+	if err == nil {
+		image.symTable = symTable
+	}
+}
+
 // loadBinaryInfoGoRuntimeElf loads information from the Go runtime sections
 // of an ELF binary, it is only called when debug info has been stripped.
 func loadBinaryInfoGoRuntimeElf(bi *BinaryInfo, image *Image, path string, elfFile *elf.File) (err error) {
@@ -2519,6 +2552,52 @@ func loadBinaryInfoGoRuntimeCommon(bi *BinaryInfo, image *Image, cu *compileUnit
 	sort.Strings(bi.Sources)
 	bi.Sources = slices.Compact(bi.Sources)
 	return nil
+}
+
+// addPCLNFunctions adds functions emitted by the Go linker that do not have a
+// corresponding DWARF entry. DWARF remains authoritative when both sources
+// describe a function at the same entry PC.
+func (bi *BinaryInfo) addPCLNFunctions(image *Image) {
+	if image.symTable == nil {
+		return
+	}
+
+	staticBase := image.StaticBase
+	missing := 0
+	dwarfIndex := 0
+	for i := range image.symTable.Funcs {
+		entry := image.symTable.Funcs[i].Entry + staticBase
+		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
+			dwarfIndex++
+		}
+		if dwarfIndex == len(bi.Functions) || bi.Functions[dwarfIndex].Entry != entry {
+			missing++
+		}
+	}
+
+	cu := &compileUnit{isgo: true, image: image}
+	merged := make([]Function, 0, len(bi.Functions)+missing)
+	dwarfIndex = 0
+	for i := range image.symTable.Funcs {
+		f := &image.symTable.Funcs[i]
+		entry := f.Entry + staticBase
+		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
+			merged = append(merged, bi.Functions[dwarfIndex])
+			dwarfIndex++
+		}
+		if dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry == entry {
+			merged = append(merged, bi.Functions[dwarfIndex])
+			dwarfIndex++
+			continue
+		}
+		merged = append(merged, Function{
+			Name:  f.Name,
+			Entry: entry,
+			End:   f.End + staticBase,
+			cu:    cu,
+		})
+	}
+	bi.Functions = append(merged, bi.Functions[dwarfIndex:]...)
 }
 
 // FindType returns the requested type. The full type name must be used.
@@ -2749,6 +2828,7 @@ func (bi *BinaryInfo) loadDebugInfoMaps(image *Image, debugInfoBytes, debugLineB
 
 	slices.SortFunc(image.compileUnits, func(a, b *compileUnit) int { return cmp.Compare(a.offset, b.offset) })
 	slices.SortFunc(bi.Functions, func(a, b Function) int { return cmp.Compare(a.Entry, b.Entry) })
+	bi.addPCLNFunctions(image)
 	slices.SortFunc(bi.packageVars, func(a, b packageVar) int { return cmp.Compare(a.addr, b.addr) })
 
 	bi.lookupFunc = nil
