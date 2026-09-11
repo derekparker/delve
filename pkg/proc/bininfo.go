@@ -2590,10 +2590,11 @@ func (bi *BinaryInfo) addPCLNTrampolineFunctions(image *Image) {
 			continue
 		}
 		merged = append(merged, Function{
-			Name:  f.Name,
-			Entry: entry,
-			End:   end,
-			cu:    cu,
+			Name:       f.Name,
+			Entry:      entry,
+			End:        end,
+			Trampoline: true,
+			cu:         cu,
 		})
 	}
 	bi.Functions = append(merged, bi.Functions[dwarfIndex:]...)

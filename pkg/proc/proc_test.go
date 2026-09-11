@@ -1734,6 +1734,9 @@ func TestStepIntoFunctionThroughARM64LinkerTrampoline(t *testing.T) {
 			!strings.HasSuffix(text[0].DestLoc.Fn.Name, "+0-tramp0") {
 			t.Fatalf("expected call destination to have a linker trampoline function, disassembled %#v", text)
 		}
+		if !text[0].DestLoc.Fn.Trampoline {
+			t.Fatal("expected pclntab linker trampoline to be marked as a trampoline")
+		}
 
 		assertNoError(grp.Step(), t, "Step() returned an error")
 
