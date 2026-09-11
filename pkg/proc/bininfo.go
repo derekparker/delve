@@ -2568,15 +2568,8 @@ func (bi *BinaryInfo) addPCLNTrampolineFunctions(image *Image) {
 	}
 
 	staticBase := image.StaticBase
-	dwarfNames := make(map[string]struct{})
-	for i := range bi.Functions {
-		fn := &bi.Functions[i]
-		if fn.cu != nil && fn.cu.image == image {
-			dwarfNames[fn.Name] = struct{}{}
-		}
-	}
-	addPCLN := make([]bool, len(image.symTable.Funcs))
-	missing := 0
+	cu := &compileUnit{isgo: true, image: image}
+	merged := make([]Function, 0, len(bi.Functions))
 	dwarfIndex := 0
 	var previousDwarfEnd uint64
 	for i := range image.symTable.Funcs {
@@ -2584,13 +2577,11 @@ func (bi *BinaryInfo) addPCLNTrampolineFunctions(image *Image) {
 		if !linkerTrampolineName.MatchString(f.Name) {
 			continue
 		}
-		if _, ok := dwarfNames[f.Name]; ok {
-			continue
-		}
 		entry := f.Entry + staticBase
 		end := f.End + staticBase
 		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
 			previousDwarfEnd = max(previousDwarfEnd, bi.Functions[dwarfIndex].End)
+			merged = append(merged, bi.Functions[dwarfIndex])
 			dwarfIndex++
 		}
 		overlapsPrevious := previousDwarfEnd > entry
@@ -2598,32 +2589,10 @@ func (bi *BinaryInfo) addPCLNTrampolineFunctions(image *Image) {
 		if overlapsPrevious || overlapsNext {
 			continue
 		}
-		addPCLN[i] = true
-		missing++
-	}
-
-	cu := &compileUnit{isgo: true, image: image}
-	merged := make([]Function, 0, len(bi.Functions)+missing)
-	dwarfIndex = 0
-	for i := range image.symTable.Funcs {
-		if !addPCLN[i] {
-			continue
-		}
-		f := &image.symTable.Funcs[i]
-		entry := f.Entry + staticBase
-		for dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry < entry {
-			merged = append(merged, bi.Functions[dwarfIndex])
-			dwarfIndex++
-		}
-		if dwarfIndex < len(bi.Functions) && bi.Functions[dwarfIndex].Entry == entry {
-			merged = append(merged, bi.Functions[dwarfIndex])
-			dwarfIndex++
-			continue
-		}
 		merged = append(merged, Function{
 			Name:  f.Name,
 			Entry: entry,
-			End:   f.End + staticBase,
+			End:   end,
 			cu:    cu,
 		})
 	}
