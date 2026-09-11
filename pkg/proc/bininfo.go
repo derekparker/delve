@@ -2827,8 +2827,8 @@ func (bi *BinaryInfo) loadDebugInfoMaps(image *Image, debugInfoBytes, debugLineB
 
 	slices.SortFunc(image.compileUnits, func(a, b *compileUnit) int { return cmp.Compare(a.offset, b.offset) })
 	slices.SortFunc(bi.Functions, func(a, b Function) int { return cmp.Compare(a.Entry, b.Entry) })
-	bi.addPCLNTrampolineFunctions(image)
 	slices.SortFunc(bi.packageVars, func(a, b packageVar) int { return cmp.Compare(a.addr, b.addr) })
+	bi.addPCLNTrampolineFunctions(image)
 
 	bi.lookupFunc = nil
 	bi.lookupGenericFunc = nil
